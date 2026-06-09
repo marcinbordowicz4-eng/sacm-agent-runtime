@@ -1,3 +1,5 @@
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -13,6 +15,9 @@ class AgentContext(BaseModel):
     previous_findings: list[str] = Field(default_factory=list)
     test_command: str | None = None
     build_command: str | None = None
+    # Accumulated proof-of-state ledger: skill_name → SkillContribution dict.
+    # Grows as each agent in the pipeline contributes its proofs.
+    skill_state: dict[str, Any] = Field(default_factory=dict)
 
 
 class CompileContextRequest(BaseModel):

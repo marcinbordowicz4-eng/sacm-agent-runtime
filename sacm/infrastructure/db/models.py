@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 try:
@@ -118,3 +118,26 @@ class Artifact(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     task: Mapped["Task"] = relationship("Task", back_populates="artifacts")
+
+
+class SkillRecord(Base):
+    """Persisted proof-of-state: a skill that an agent has demonstrated.
+
+    Accuracy improves via EMA with each task cycle.  Only skills whose
+    accuracy exceeds a threshold are injected into future agent contexts,
+    so the system gradually concentrates on what actually works.
+    """
+
+    __tablename__ = "skill_records"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    skill_name: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    agent_name: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    instructions: Mapped[str] = mapped_column(Text, nullable=False)
+    accuracy: Mapped[float] = mapped_column(Float, default=0.5)
+    use_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_reward: Mapped[float] = mapped_column(Float, default=0.5)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )

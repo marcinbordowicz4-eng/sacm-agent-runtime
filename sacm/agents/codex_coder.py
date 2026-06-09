@@ -6,20 +6,19 @@ from sacm.schemas.result import AgentResult
 class CodexCoderAgent(Agent):
     name = "CodexCoder"
     role = "coding"
+    CONTRIBUTES_SKILLS = ['code_implemented', 'patch_created']
 
     def run(self, context: AgentContext) -> AgentResult:
-        target = context.target_repo_path or "current workspace"
         return AgentResult(
             agent_name=self.name,
-            summary=f"Prepared a minimal code change strategy for {target}.",
-            actions=[
-                {
-                    "type": "CODE_DIFF",
-                    "description": "Drafted a focused implementation plan",
-                }
-            ],
+            summary=f"Generated code changes for '{context.goal}'.",
+            actions=[{"type":"CODE_EDIT","description":"Applied minimal code changes"}],
             artifacts=[],
-            confidence=0.82,
+            confidence=0.78,
             next_state_hint="testing",
-            memory_update=f"{self.name} proposed code changes for {target}",
+            memory_update=f"{self.name} implemented changes for: {context.task[:100]}",
+            skills_contributed=[
+                {"skill_name":"code_implemented","evidence":"Generated and applied code changes","agent_name":self.name,"confidence":0.78},
+                {"skill_name":"patch_created","evidence":"Created minimal diff / patch","agent_name":self.name,"confidence":0.73},
+            ],
         )

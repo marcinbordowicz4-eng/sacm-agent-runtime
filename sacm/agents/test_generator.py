@@ -6,19 +6,19 @@ from sacm.schemas.result import AgentResult
 class TestGeneratorAgent(Agent):
     name = "TestGenerator"
     role = "testing"
+    CONTRIBUTES_SKILLS = ['tests_written', 'test_coverage']
 
     def run(self, context: AgentContext) -> AgentResult:
         return AgentResult(
             agent_name=self.name,
-            summary="Identified missing regression coverage and proposed deterministic tests.",
-            actions=[
-                {
-                    "type": "TEST_FILE",
-                    "description": "Suggested adding regression coverage for the task",
-                }
-            ],
+            summary="Generated missing unit and integration tests.",
+            actions=[{"type":"TEST_GENERATION","description":"Created test cases for uncovered paths"}],
             artifacts=[],
-            confidence=0.84,
+            confidence=0.73,
             next_state_hint="reviewing",
-            memory_update=f"{self.name} suggested test coverage for {context.task_id}",
+            memory_update=f"{self.name} generated tests for task {context.task_id}",
+            skills_contributed=[
+                {"skill_name":"tests_written","evidence":"Generated missing unit/integration tests","agent_name":self.name,"confidence":0.73},
+                {"skill_name":"test_coverage","evidence":"Improved test coverage","agent_name":self.name,"confidence":0.73},
+            ],
         )

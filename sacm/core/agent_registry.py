@@ -1,8 +1,12 @@
 from sacm.agents.architect import ArchitectAgent
+from sacm.agents.backend_agent import BackendAgent
 from sacm.agents.base import Agent
 from sacm.agents.claude_reasoner import ClaudeReasonerAgent
 from sacm.agents.cloud_executor import CloudExecutorAgent
 from sacm.agents.codex_coder import CodexCoderAgent
+from sacm.agents.context_agent import ContextAgent
+from sacm.agents.frontend_agent import FrontendAgent
+from sacm.agents.infrastructure_agent import InfrastructureAgent
 from sacm.agents.reviewer import ReviewerAgent
 from sacm.agents.security_auditor import SecurityAuditorAgent
 from sacm.agents.test_generator import TestGeneratorAgent
@@ -15,6 +19,10 @@ AGENT_CLASSES = [
     TestGeneratorAgent,
     SecurityAuditorAgent,
     ArchitectAgent,
+    BackendAgent,
+    FrontendAgent,
+    InfrastructureAgent,
+    ContextAgent,
 ]
 
 

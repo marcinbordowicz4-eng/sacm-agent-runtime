@@ -11,3 +11,6 @@ class AgentResult(BaseModel):
     confidence: float
     next_state_hint: str
     memory_update: str | None = None
+    # Skills proved by this agent (proof-of-state contributions).
+    # Each entry is a SkillContribution dict: {skill_name, evidence, agent_name, confidence}
+    skills_contributed: list[dict[str, Any]] = Field(default_factory=list)

@@ -11,7 +11,7 @@ def test_agent_registry_has_agents():
     from sacm.core.agent_registry import AgentRegistry
 
     registry = AgentRegistry()
-    assert len(registry.all()) == 7
+    assert len(registry.all()) == 11
     assert "ClaudeReasoner" in registry.names()
 
 
