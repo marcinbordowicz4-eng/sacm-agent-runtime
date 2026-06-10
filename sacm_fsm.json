@@ -1,0 +1,114 @@
+[
+  {
+    "from_state": "planning",
+    "to_state": "coding",
+    "skill_name": "task_analyzed",
+    "agent_name": "ClaudeReasoner",
+    "accuracy": 0.6930000000000002,
+    "use_count": 2
+  },
+  {
+    "from_state": "planning",
+    "to_state": "coding",
+    "skill_name": "architecture_ready",
+    "agent_name": "Architect",
+    "accuracy": 0.6,
+    "use_count": 0
+  },
+  {
+    "from_state": "planning",
+    "to_state": "coding",
+    "skill_name": "api_designed",
+    "agent_name": "BackendAgent",
+    "accuracy": 0.65,
+    "use_count": 0
+  },
+  {
+    "from_state": "planning",
+    "to_state": "coding",
+    "skill_name": "ui_designed",
+    "agent_name": "FrontendAgent",
+    "accuracy": 0.65,
+    "use_count": 0
+  },
+  {
+    "from_state": "planning",
+    "to_state": "coding",
+    "skill_name": "infra_planned",
+    "agent_name": "InfrastructureAgent",
+    "accuracy": 0.55,
+    "use_count": 0
+  },
+  {
+    "from_state": "coding",
+    "to_state": "testing",
+    "skill_name": "code_implemented",
+    "agent_name": "CodexCoder",
+    "accuracy": 0.7517400000000001,
+    "use_count": 2
+  },
+  {
+    "from_state": "coding",
+    "to_state": "reviewing",
+    "skill_name": "patch_created",
+    "agent_name": "CodexCoder",
+    "accuracy": 0.75,
+    "use_count": 0
+  },
+  {
+    "from_state": "testing",
+    "to_state": "reviewing",
+    "skill_name": "tests_written",
+    "agent_name": "TestGenerator",
+    "accuracy": 0.701095,
+    "use_count": 2
+  },
+  {
+    "from_state": "testing",
+    "to_state": "debugging",
+    "skill_name": "tests_run",
+    "agent_name": "CloudExecutor",
+    "accuracy": 0.6,
+    "use_count": 0
+  },
+  {
+    "from_state": "debugging",
+    "to_state": "coding",
+    "skill_name": "root_cause_found",
+    "agent_name": "ClaudeReasoner",
+    "accuracy": 0.7,
+    "use_count": 0
+  },
+  {
+    "from_state": "debugging",
+    "to_state": "testing",
+    "skill_name": "fix_applied",
+    "agent_name": "CodexCoder",
+    "accuracy": 0.65,
+    "use_count": 0
+  },
+  {
+    "from_state": "reviewing",
+    "to_state": "done",
+    "skill_name": "review_complete",
+    "agent_name": "Reviewer",
+    "accuracy": 0.8405,
+    "use_count": 2
+  },
+  {
+    "from_state": "reviewing",
+    "to_state": "coding",
+    "skill_name": "issues_found",
+    "agent_name": "Reviewer",
+    "accuracy": 0.5,
+    "use_count": 0
+  },
+  {
+    "from_state": "*",
+    "to_state": "*",
+    "skill_name": "security_audited",
+    "agent_name": "SecurityAuditor",
+    "accuracy": 0.7,
+    "use_count": 0
+  }
+]

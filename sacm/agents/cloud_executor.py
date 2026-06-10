@@ -25,7 +25,7 @@ class CloudExecutorAgent(Agent):
         try:
             proc = subprocess.run(
                 command, shell=True, capture_output=True, text=True,
-                timeout=120, cwd=context.target_repo_path,
+                timeout=600, cwd=context.target_repo_path,
             )
             success = proc.returncode == 0
             conf = 1.0 if success else 0.3
