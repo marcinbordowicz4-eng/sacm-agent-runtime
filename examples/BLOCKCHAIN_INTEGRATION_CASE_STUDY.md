@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-Successfully delivered **multi-chain testnet support** (Ethereum Sepolia, Solana Devnet, Vara Testnet) for real-estate-chain-mobile using SACM multi-agent orchestration, achieving **40% token efficiency** vs. manual implementation.
+Delivered **multi-chain testnet support** (Ethereum Sepolia, Solana Devnet, Vara Testnet) for real-estate-chain-mobile using SACM multi-agent orchestration. The 40% figure is a modeled reduction; observed session usage against the same manual baseline was 55.6%.
 
 **Commit Hash**: `9d523d34e87b9b135a02bdd6f8e45b8b993424c8`  
 **Repository**: https://github.com/reestate-io/real-estate-chain-mobile  
@@ -13,7 +13,7 @@ Successfully delivered **multi-chain testnet support** (Ethereum Sepolia, Solana
 ## Business Context
 
 ### Problem Statement
-- **Current State**: Mainnet-only blockchain support (Polygon Amoy)
+- **Current State**: Single-chain testnet support limited to Polygon Amoy (chain ID 80002)
 - **Requirement**: Add testnet support for demo with KeyC marketplace, Mica integration, and Vara parachain team
 - **Constraint**: Zero breaking changes, maintain production functionality
 - **Timeline**: ~90 minutes
@@ -47,7 +47,7 @@ src/config/demo-config.ts         (269 lines) - Demo accounts & showcase propert
 src/services/multichain-adapter.ts (175 lines) - Universal multi-chain TX interface
 docs/IMPLEMENTATION_DELIVERY_SUMMARY.md  - Complete implementation guide
 docs/DEVELOPER_IMPLEMENTATION_GUIDE.md  - 15+ code examples
-docs/TESTING_CHECKLIST.md              - 150+ test cases
+docs/TESTING_CHECKLIST.md              - 150+ documented test cases
 ```
 
 **Files Modified**:
@@ -119,18 +119,18 @@ TOTAL TOKENS:             96,000  🟢
 
 ### Savings Summary
 ```
-╔═══════════════════════════════════════════╗
-║          TOKEN SAVINGS BREAKDOWN          ║
-╠═══════════════════════════════════════════╣
-║ Tokens Saved:            64,000 (40%)     ║
-║ Equivalent API Calls:         64 calls    ║
-║ Estimated Cost Savings:     ~$0.10        ║
-║ Time Saved:              ~30 minutes       ║
-║ Quality:        100% reproducible         ║
-╚═══════════════════════════════════════════╝
+Modeled token reduction:                        64,000 (40.0%)
+Observed token reduction vs. 160,000 baseline:  88,887 (55.6%)
+Observed token usage:                           71,113
+Cost:                                            Not calculated
 ```
 
-**ROI**: 40% more efficient token usage while maintaining higher code quality through multi-agent verification.
+The two reductions are not interchangeable: 40% comes from the modeled SACM
+estimate (96,000 tokens), while 55.6% compares observed session usage (71,113
+tokens) with the same 160,000-token manual baseline. Cost must be calculated
+from actual model, input, output, cached-input, tool-execution, and sandbox
+prices. Reproducibility and quality require CI evidence rather than a documented
+test-case count alone.
 
 ---
 
@@ -154,7 +154,8 @@ export const SUPPORTED_CHAINS = [
 export function getWalletForChain(chainId: number): string {
   const info = CHAIN_INFO[chainId];
   if (info.type === 'solana') return 'io.phantom';
-  if (info.type === 'parachain') return 'io.metamask';
+  if (info.type === 'substrate') return 'polkadot-js';
+  if (info.type === 'vara-eth') return 'io.metamask';
   return 'io.metamask'; // Default EVM
 }
 ```
@@ -180,7 +181,7 @@ export async function submitTransaction(
 | TX flow stubbed but extensible | ✅ | Clean adapter interface |
 | Zero breaking changes | ✅ | All mainnet chains 100% functional |
 | TestFlight v1.0.7 deployment | ✅ | Build 305+ submitted |
-| 40%+ token efficiency | ✅ | 64,000 tokens saved |
+| Modeled token reduction | ✅ | 40.0%; observed reduction was 55.6% |
 
 ---
 

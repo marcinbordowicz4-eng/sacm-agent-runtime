@@ -67,7 +67,11 @@ REWARD_WEIGHTS = {
 }
 
 # ─── Kolory ───────────────────────────────────────────────────────────────────
-G = "\033[32m"; Y = "\033[33m"; C = "\033[36m"; B = "\033[1m"; R = "\033[0m"
+G = "\033[32m"
+Y = "\033[33m"
+C = "\033[36m"
+B = "\033[1m"
+R = "\033[0m"
 
 def log(agent: str, msg: str, color: str = C) -> None:
     ts = datetime.now().strftime("%H:%M:%S")
@@ -139,10 +143,14 @@ class BuildHistory:
         build_ok: bool, submit_ok: bool, elapsed_s: float,
     ) -> float:
         r = 0.0
-        if tsc_ok:    r += REWARD_WEIGHTS["tsc_ok"]
-        if eslint_ok: r += REWARD_WEIGHTS["eslint_ok"]
-        if build_ok:  r += REWARD_WEIGHTS["build_success"]
-        if submit_ok: r += REWARD_WEIGHTS["submit_ok"]
+        if tsc_ok:
+            r += REWARD_WEIGHTS["tsc_ok"]
+        if eslint_ok:
+            r += REWARD_WEIGHTS["eslint_ok"]
+        if build_ok:
+            r += REWARD_WEIGHTS["build_success"]
+        if submit_ok:
+            r += REWARD_WEIGHTS["submit_ok"]
         # Speed bonus: każda sekunda poniżej baseline przynosi proporcjonalną nagrodę
         if elapsed_s < self.ema_elapsed_s and self.ema_elapsed_s > 0:
             speed_ratio = 1.0 - elapsed_s / self.ema_elapsed_s
@@ -255,7 +263,7 @@ def apply_feedback(
     )
 
     # Wektor belief (równomierny jako prior)
-    belief = torch.ones(11) / 11.0
+    belief = torch.ones(7) / 7.0
 
     router.update(
         context_vector=ctx_vec,
@@ -431,7 +439,7 @@ def run_coordinator(
     log("Coordinator", f"{B}Phase 1 — Równoległe sprawdzenia (podczas buildu Xcode){R}")
     p1 = phase1_parallel(project_dir, base_ctx)
 
-    for key, val in p1.items():
+    for _key, val in p1.items():
         if isinstance(val, tuple) and len(val) == 2 and isinstance(val[1], AgentResult):
             r: AgentResult = val[1]
             for s in r.skills_contributed:

@@ -3,7 +3,18 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlalchemy import text
 
-from apps.api.routes import agents, context, memory, repository, router, tasks
+from apps.api.routes import (
+    agents,
+    approvals,
+    context,
+    github,
+    memory,
+    organizations,
+    repository,
+    router,
+    runs,
+    tasks,
+)
 from sacm.infrastructure.db.models import Base
 from sacm.infrastructure.db.session import engine
 
@@ -25,6 +36,10 @@ app.include_router(memory.router, prefix="/memory", tags=["memory"])
 app.include_router(router.router, prefix="/router", tags=["router"])
 app.include_router(context.router, prefix="/context", tags=["context"])
 app.include_router(repository.router, prefix="/repository", tags=["repository"])
+app.include_router(github.router, prefix="/github", tags=["github"])
+app.include_router(runs.router, prefix="/v1/runs", tags=["runs"])
+app.include_router(approvals.router, prefix="/v1/approvals", tags=["approvals"])
+app.include_router(organizations.router, prefix="/v1/organizations", tags=["organizations"])
 
 
 @app.get("/health")

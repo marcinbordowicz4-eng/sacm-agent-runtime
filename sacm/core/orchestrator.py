@@ -32,7 +32,9 @@ class Orchestrator:
         self.feedback_service = FeedbackService(db, self.router_service)
         self.observability = ObservabilityService()
 
-    def run_task(self, task_id: str, max_steps: int = MAX_STEPS) -> dict:
+    def run_task(
+        self, task_id: str, max_steps: int = MAX_STEPS, run_id: str | None = None
+    ) -> dict:
         task = self.task_service.get(task_id)
         if not task:
             raise ValueError(f"Task {task_id} not found")
@@ -85,9 +87,22 @@ class Orchestrator:
                 history=history,
                 memory=memory,
             )
-            result = selected_agent.run(compiled_context)
+            agent_task = self.context_compiler.compile_v1(
+                run_id=run_id or f"legacy:{task_id}",
+                step_id=f"agent-{step_index + 1}",
+                agent=selected_agent,
+                context=compiled_context,
+            )
+            agent_result = selected_agent.run_v1(agent_task)
+            result = selected_agent.result_from_v1(agent_result)
 
-            self.event_service.save_agent_result(task_id, selected_agent.name, result)
+            self.event_service.save_agent_result(
+                task_id,
+                selected_agent.name,
+                result,
+                task_contract=agent_task,
+                result_contract=agent_result,
+            )
             self.memory_service.add_from_agent_result(task_id, result)
             self.state_service.update_belief_state(task_id, routing_result["next_belief"])
 

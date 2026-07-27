@@ -1,16 +1,26 @@
 import os
 from hashlib import blake2b
-from typing import List
+from typing import Callable, List
 
 import numpy as np
+
+from sacm.core.observability import ObservabilityService
+
+OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 
 
 class EmbeddingService:
     """Embedding provider with a deterministic local mode for development."""
 
-    def __init__(self, provider: str = "hash", dim: int = 1536):
+    def __init__(
+        self,
+        provider: str = "hash",
+        dim: int = 1536,
+        usage_recorder: Callable[[str, str, int, str], None] | None = None,
+    ):
         self.provider = os.getenv("DEFAULT_EMBEDDING_PROVIDER", provider)
         self.dim = dim
+        self._usage_recorder = usage_recorder
 
     def embed(self, text: str) -> List[float]:
         if self.provider == "openai":
@@ -48,7 +58,23 @@ class EmbeddingService:
         client = openai.OpenAI()
         response = client.embeddings.create(
             input=text,
-            model="text-embedding-3-small",
+            model=OPENAI_EMBEDDING_MODEL,
             dimensions=self.dim,
         )
+        usage = getattr(response, "usage", None)
+        input_tokens = getattr(usage, "prompt_tokens", None)
+        if input_tokens is None:
+            input_tokens = getattr(usage, "total_tokens", None)
+        if input_tokens is not None:
+            self._record_usage(input_tokens)
         return response.data[0].embedding
+
+    def _record_usage(self, input_tokens: int) -> None:
+        if self._usage_recorder is not None:
+            self._usage_recorder(
+                "openai", OPENAI_EMBEDDING_MODEL, input_tokens, "embedding"
+            )
+            return
+        ObservabilityService().record_embedding_usage(
+            "openai", OPENAI_EMBEDDING_MODEL, input_tokens, "embedding"
+        )

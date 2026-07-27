@@ -27,13 +27,31 @@ dependencies = [
     "langchain-core>=0.3.0",
     "langchain-postgres>=0.0.12",
     "langsmith>=0.3.0",
+    "opentelemetry-api>=1.26.0",
+    "opentelemetry-sdk>=1.26.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.26.0",
     "typer>=0.9.0",
     "rich>=13.0.0",
     "pyyaml>=6.0",
-    "numpy>=1.26.0",
+    "numpy>=1.26.0,<2",
 ]
 
 [project.optional-dependencies]
+agents = [
+    "openai-agents>=0.0.16",
+]
+mlflow = [
+    "mlflow>=2.14.0",
+]
+temporal = [
+    "temporalio>=1.7.0",
+]
+github-app = [
+    "PyJWT[crypto]>=2.8.0",
+]
+auth = [
+    "PyJWT[crypto]>=2.8.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
@@ -46,6 +64,7 @@ dev = [
 [project.scripts]
 sacm = "cli.main:app"
 sacm-mcp = "sacm.mcp_server:main"
+sacm-temporal-worker = "sacm.workflows.temporal_worker:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["apps", "cli", "sacm"]

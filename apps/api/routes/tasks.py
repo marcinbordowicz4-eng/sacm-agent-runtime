@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from sacm.core.cost_service import CostService
 from sacm.core.event_service import EventService
 from sacm.core.memory_service import MemoryService
 from sacm.core.orchestrator import Orchestrator
@@ -71,3 +72,11 @@ def list_artifacts(task_id: str, db: Session = Depends(get_db)) -> list[dict]:
         }
         for artifact in artifacts
     ]
+
+
+@router.get("/{task_id}/costs")
+def task_costs(task_id: str, db: Session = Depends(get_db)) -> dict:
+    task = TaskService(db).get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return CostService(db).summarize_task(task_id)

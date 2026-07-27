@@ -11,17 +11,11 @@ Covers:
 
 from __future__ import annotations
 
-import copy
 import json
-import os
 from pathlib import Path
-from unittest.mock import MagicMock
-
-import pytest
 
 from sacm.schemas.context import AgentContext
 from sacm.schemas.result import AgentResult
-
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
@@ -122,7 +116,7 @@ class TestAgentFSM:
         """Loading a checkpoint missing a new transition adds it from defaults."""
         path = tmp_path / "fsm.json"
         path.write_text(json.dumps([]))   # empty checkpoint
-        from sacm.core.state_machine import AgentFSM, _DEFAULTS
+        from sacm.core.state_machine import _DEFAULTS, AgentFSM
         fsm = AgentFSM(path=str(path))
         assert len(fsm.transitions) == len(_DEFAULTS)
 
@@ -229,24 +223,12 @@ class TestContextAgent:
     def test_all_agents_have_contributes_skills(self):
         """Every worker agent must declare CONTRIBUTES_SKILLS."""
         from sacm.agents.context_agent import ContextAgent
-        ca = ContextAgent.__new__(ContextAgent)
-        # Import all worker classes
-        from sacm.agents.claude_reasoner import ClaudeReasonerAgent
-        from sacm.agents.codex_coder import CodexCoderAgent
-        from sacm.agents.cloud_executor import CloudExecutorAgent
-        from sacm.agents.reviewer import ReviewerAgent
-        from sacm.agents.test_generator import TestGeneratorAgent
-        from sacm.agents.security_auditor import SecurityAuditorAgent
-        from sacm.agents.architect import ArchitectAgent
-        from sacm.agents.backend_agent import BackendAgent
-        from sacm.agents.frontend_agent import FrontendAgent
-        from sacm.agents.infrastructure_agent import InfrastructureAgent
-        workers = [ClaudeReasonerAgent, CodexCoderAgent, CloudExecutorAgent,
-                   ReviewerAgent, TestGeneratorAgent, SecurityAuditorAgent,
-                   ArchitectAgent, BackendAgent, FrontendAgent, InfrastructureAgent]
-        for cls in workers:
-            assert hasattr(cls, "CONTRIBUTES_SKILLS"), f"{cls.__name__} missing CONTRIBUTES_SKILLS"
-            assert len(cls.CONTRIBUTES_SKILLS) > 0
+        workers = ContextAgent()._workers.values()
+        for worker in workers:
+            assert hasattr(worker, "CONTRIBUTES_SKILLS"), (
+                f"{worker.__class__.__name__} missing CONTRIBUTES_SKILLS"
+            )
+            assert len(worker.CONTRIBUTES_SKILLS) > 0
 
     def test_agent_results_include_skills_contributed(self):
         from sacm.agents.claude_reasoner import ClaudeReasonerAgent

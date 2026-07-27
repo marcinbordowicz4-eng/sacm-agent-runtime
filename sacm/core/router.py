@@ -3,10 +3,11 @@ import threading
 
 import torch
 
+from sacm.core.agent_registry import AGENT_CLASSES
 from sacm.ml.embeddings import EmbeddingService
 from sacm.ml.torch_router import AgentRouter
 
-NUM_AGENTS = 11
+NUM_AGENTS = len(AGENT_CLASSES)
 NUM_STATES = 7
 CONTEXT_DIM = 256
 

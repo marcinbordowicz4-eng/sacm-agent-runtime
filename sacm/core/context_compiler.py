@@ -1,6 +1,7 @@
 from sacm.agents.base import Agent
 from sacm.infrastructure.db.models import ContextEvent, MemoryChunk, Task
 from sacm.schemas.context import AgentContext
+from sacm.schemas.contracts import AgentTaskV1
 
 
 class ContextCompiler:
@@ -46,6 +47,26 @@ class ContextCompiler:
             constraints=constraints,
             previous_findings=previous_findings,
             token_budget=self.token_budget,
+        )
+
+    def compile_v1(
+        self,
+        *,
+        run_id: str,
+        step_id: str,
+        agent: Agent,
+        context: AgentContext,
+    ) -> AgentTaskV1:
+        return AgentTaskV1(
+            run_id=run_id,
+            step_id=step_id,
+            role=agent.contract_role,
+            objective=context.goal,
+            acceptance_criteria=context.constraints,
+            context_references=context.relevant_memory + context.previous_findings,
+            token_budget=context.token_budget,
+            timeout_seconds=300,
+            execution_context=context.model_dump(),
         )
 
     @staticmethod

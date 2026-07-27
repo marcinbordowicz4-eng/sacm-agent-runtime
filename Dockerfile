@@ -6,7 +6,7 @@ COPY pyproject.toml README.md ./
 COPY sacm ./sacm
 COPY apps ./apps
 COPY cli ./cli
-RUN pip install -e .
+RUN pip install -e ".[mlflow,temporal]"
 
 COPY . .
 

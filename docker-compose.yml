@@ -2,29 +2,116 @@ services:
   api:
     build: .
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
-      DATABASE_URL: postgresql://sacm:sacm@postgres:5432/sacm
+      DATABASE_URL: postgresql+psycopg2://sacm:${SACM_POSTGRES_PASSWORD:-sacm-local-only}@postgres:5432/sacm
       REDIS_URL: redis://redis:6379
+      SACM_OTEL_ENABLED: ${SACM_OTEL_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      SACM_MLFLOW_ENABLED: ${SACM_MLFLOW_ENABLED:-false}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      SACM_OPA_URL: http://opa:8181
+      SACM_OPA_FAIL_CLOSED: "true"
+      SACM_WORKFLOW_BACKEND: ${SACM_WORKFLOW_BACKEND:-local}
+      SACM_TEMPORAL_ADDRESS: temporal:7233
+      SACM_TEMPORAL_NAMESPACE: default
+      SACM_TEMPORAL_TASK_QUEUE: sacm-runs
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      opa:
+        condition: service_healthy
+
+  temporal-worker:
+    build: .
+    command: ["sacm-temporal-worker"]
+    profiles: ["temporal"]
+    environment:
+      DATABASE_URL: postgresql+psycopg2://sacm:${SACM_POSTGRES_PASSWORD:-sacm-local-only}@postgres:5432/sacm
+      SACM_TEMPORAL_ADDRESS: temporal:7233
+      SACM_TEMPORAL_NAMESPACE: default
+      SACM_TEMPORAL_TASK_QUEUE: sacm-runs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_started
 
   postgres:
     image: pgvector/pgvector:pg16
     environment:
       POSTGRES_DB: sacm
       POSTGRES_USER: sacm
-      POSTGRES_PASSWORD: sacm
+      POSTGRES_PASSWORD: ${SACM_POSTGRES_PASSWORD:-sacm-local-only}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sacm -d sacm"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   redis:
-    image: redis:7
+    image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  opa:
+    image: openpolicyagent/opa:0.67.1-static
+    command: ["run", "--server", "--addr=:8181", "/policies"]
+    ports:
+      - "127.0.0.1:8181:8181"
+    volumes:
+      - ./config/opa:/policies:ro
+    healthcheck:
+      test: ["CMD", "opa", "eval", "--format=raw", "data.sacm.allow"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.104.0
+    profiles: ["observability"]
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    ports:
+      - "127.0.0.1:4318:4318"
+    volumes:
+      - ./config/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+
+  mlflow:
+    image: python:3.12-slim
+    profiles: ["observability"]
+    command:
+      ["sh", "-c", "pip install --no-cache-dir mlflow==2.14.0 && mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:////mlflow/mlflow.db --default-artifact-root /mlflow/artifacts"]
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - mlflow_data:/mlflow
+
+  temporal:
+    image: temporalio/auto-setup:1.25.0
+    profiles: ["temporal"]
+    environment:
+      DB: postgresql12
+      DB_PORT: "5432"
+      POSTGRES_SEEDS: postgres
+      POSTGRES_USER: sacm
+      POSTGRES_PWD: ${SACM_POSTGRES_PASSWORD:-sacm-local-only}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:7233:7233"
 
 volumes:
   postgres_data:
+  mlflow_data:

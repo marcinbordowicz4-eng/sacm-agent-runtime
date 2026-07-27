@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -30,9 +31,21 @@ class RepositoryAdapter:
         target.write_text(content, encoding="utf-8")
 
     def create_worktree(self, branch_name: str) -> str:
-        worktree_root = self.repo_path.parent / f"{self.repo_path.name}-sacm-worktrees"
-        worktree_path = worktree_root / branch_name
-        worktree_root.mkdir(exist_ok=True)
+        if (
+            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", branch_name)
+            or ".." in branch_name
+            or branch_name.startswith("-")
+        ):
+            raise ValueError(f"Invalid worktree branch name: {branch_name!r}")
+
+        worktree_root = (
+            self.repo_path.parent / f"{self.repo_path.name}-sacm-worktrees"
+        ).resolve()
+        worktree_path = (worktree_root / branch_name).resolve()
+        if worktree_root not in worktree_path.parents:
+            raise ValueError("Worktree path must remain inside the SACM worktree root.")
+
+        worktree_path.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(
             ["git", "worktree", "add", "-b", branch_name, str(worktree_path)],
             cwd=self.repo_path,

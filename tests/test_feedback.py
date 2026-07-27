@@ -1,16 +1,14 @@
 """Tests for the FeedbackService and the router's online learning loop."""
 
-import os
 import copy
-import tempfile
-from unittest.mock import MagicMock, patch
+import os
+from unittest.mock import MagicMock
 
 import pytest
 import torch
 
 from sacm.ml.torch_router import AgentRouter
 from sacm.schemas.result import AgentResult
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -231,16 +229,18 @@ class TestFeedbackServiceRecord:
     def test_update_count_increments(self):
         svc = self._make_svc()
         result = _make_result(confidence=0.5, next_state="planning")
-        for i in range(3):
+        for _i in range(3):
             svc.record([0.0] * 256, _uniform_belief(), 0, "Architect", result)
         assert svc._update_count == 3
 
     def test_quality_score_ema_update(self, db):
         """quality_score should move toward the reward in the DB."""
-        from sacm.core.feedback_service import FeedbackService, EMA_ALPHA
+        import datetime
+        import uuid
+
+        from sacm.core.feedback_service import EMA_ALPHA, FeedbackService
         from sacm.core.router import RouterService
         from sacm.infrastructure.db.models import Agent
-        import uuid, datetime
 
         # seed an agent row in the test DB
         agent = Agent(

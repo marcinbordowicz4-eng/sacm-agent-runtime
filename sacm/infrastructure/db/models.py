@@ -3,7 +3,17 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 try:
@@ -44,6 +54,66 @@ class Task(Base):
     memory_chunks: Mapped[list["MemoryChunk"]] = relationship("MemoryChunk", back_populates="task")
     agent_states: Mapped[list["AgentState"]] = relationship("AgentState", back_populates="task")
     artifacts: Mapped[list["Artifact"]] = relationship("Artifact", back_populates="task")
+    runs: Mapped[list["Run"]] = relationship("Run", back_populates="task")
+
+
+class Organization(Base):
+    __tablename__ = "organizations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    slug: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    projects: Mapped[list["Project"]] = relationship(
+        "Project", back_populates="organization", cascade="all, delete-orphan"
+    )
+    memberships: Mapped[list["Membership"]] = relationship(
+        "Membership", back_populates="organization", cascade="all, delete-orphan"
+    )
+
+
+class Project(Base):
+    __tablename__ = "projects"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "slug", name="uq_projects_organization_slug"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    organization_id: Mapped[str] = mapped_column(
+        ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    slug: Mapped[str] = mapped_column(String, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    repository_full_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    repository_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    organization: Mapped["Organization"] = relationship(
+        "Organization", back_populates="projects"
+    )
+    runs: Mapped[list["Run"]] = relationship("Run", back_populates="project")
+
+
+class Membership(Base):
+    __tablename__ = "memberships"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id", "actor_id", name="uq_memberships_organization_actor"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    organization_id: Mapped[str] = mapped_column(
+        ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    actor_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    organization: Mapped["Organization"] = relationship(
+        "Organization", back_populates="memberships"
+    )
 
 
 class Agent(Base):
@@ -118,6 +188,115 @@ class Artifact(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     task: Mapped["Task"] = relationship("Task", back_populates="artifacts")
+
+
+class Run(Base):
+    __tablename__ = "runs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), nullable=False, index=True)
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey("projects.id"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String, nullable=False, default="CREATED", index=True)
+    workflow_version: Mapped[str] = mapped_column(String, nullable=False, default="run/v1")
+    source_revision: Mapped[str | None] = mapped_column(String, nullable=True)
+    target_repo_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    cancellation_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    task: Mapped["Task"] = relationship("Task", back_populates="runs")
+    project: Mapped["Project | None"] = relationship("Project", back_populates="runs")
+    steps: Mapped[list["RunStep"]] = relationship(
+        "RunStep", back_populates="run", cascade="all, delete-orphan"
+    )
+    events: Mapped[list["RuntimeEvent"]] = relationship(
+        "RuntimeEvent", back_populates="run", cascade="all, delete-orphan"
+    )
+    evidence_packs: Mapped[list["EvidencePack"]] = relationship(
+        "EvidencePack", back_populates="run", cascade="all, delete-orphan"
+    )
+    approvals: Mapped[list["Approval"]] = relationship(
+        "Approval", back_populates="run", cascade="all, delete-orphan"
+    )
+
+
+class RunStep(Base):
+    __tablename__ = "run_steps"
+    __table_args__ = (
+        UniqueConstraint("run_id", "sequence", name="uq_run_steps_sequence"),
+        UniqueConstraint("run_id", "idempotency_key", name="uq_run_steps_idempotency"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), nullable=False, index=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="PENDING")
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    input_: Mapped[dict[str, Any]] = mapped_column("input", JSON, default=dict)
+    output: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    run: Mapped["Run"] = relationship("Run", back_populates="steps")
+
+
+class RuntimeEvent(Base):
+    __tablename__ = "runtime_events"
+    __table_args__ = (
+        UniqueConstraint("run_id", "sequence", name="uq_runtime_events_sequence"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), nullable=False, index=True)
+    step_id: Mapped[str | None] = mapped_column(ForeignKey("run_steps.id"), nullable=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
+    event_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    actor: Mapped[str] = mapped_column(String, nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String, nullable=False)
+    causation_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    previous_event_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    event_hash: Mapped[str] = mapped_column(String, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    run: Mapped["Run"] = relationship("Run", back_populates="events")
+
+
+class EvidencePack(Base):
+    __tablename__ = "evidence_packs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), nullable=False, index=True)
+    path: Mapped[str] = mapped_column(String, nullable=False)
+    manifest_hash: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    run: Mapped["Run"] = relationship("Run", back_populates="evidence_packs")
+
+
+class Approval(Base):
+    __tablename__ = "approvals"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String, nullable=False)
+    resource: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="PENDING")
+    requested_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    decided_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    decision_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    run: Mapped["Run"] = relationship("Run", back_populates="approvals")
 
 
 class SkillRecord(Base):

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Optional
 
 _FSM_PATH = os.getenv("SACM_FSM_PATH", "./sacm_fsm.json")
@@ -86,9 +86,11 @@ _DEFAULTS: list[tuple] = [
     ("planning",  "coding",    "infra_planned",       "InfrastructureAgent",   0.55),
     # coding → testing / reviewing
     ("coding",    "testing",   "code_implemented",    "CodexCoder",            0.80),
+    ("coding",    "testing",   "implementation_executed", "CodexExecutor",        0.78),
     ("coding",    "reviewing", "patch_created",       "CodexCoder",            0.75),
     # testing → reviewing / debugging
     ("testing",   "reviewing", "tests_written",       "TestGenerator",         0.72),
+    ("testing",   "reviewing", "mobile_e2e_executed", "MobileE2E",             0.70),
     ("testing",   "debugging", "tests_run",           "CloudExecutor",         0.60),
     # debugging → coding / testing
     ("debugging", "coding",    "root_cause_found",    "ClaudeReasoner",        0.70),
@@ -98,6 +100,11 @@ _DEFAULTS: list[tuple] = [
     ("reviewing", "coding",    "issues_found",        "Reviewer",              0.50),
     # wildcard — can fire from any state
     ("*",         "*",         "security_audited",    "SecurityAuditor",       0.70),
+    ("*",         "*",         "cost_telemetry_assessed", "OpenTelemetryCost",   0.45),
+    ("*",         "*",         "router_experiment_assessed", "MLflowExperiment", 0.40),
+    ("reviewing", "reviewing", "github_delivery_preflighted", "GitHubDelivery", 0.65),
+    ("testing",   "testing",  "eas_release_preflighted", "EASWorkflow",         0.50),
+    ("reviewing", "reviewing", "security_ci_preflighted", "SecurityDelivery",   0.55),
 ]
 
 
