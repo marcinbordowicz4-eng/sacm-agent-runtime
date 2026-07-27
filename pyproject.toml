@@ -23,6 +23,10 @@ dependencies = [
     "sentence-transformers>=2.5.0",
     "gitpython>=3.1.40",
     "httpx>=0.26.0",
+    "mcp>=1.0.0,<2.0.0",
+    "langchain-core>=0.3.0",
+    "langchain-postgres>=0.0.12",
+    "langsmith>=0.3.0",
     "typer>=0.9.0",
     "rich>=13.0.0",
     "pyyaml>=6.0",
@@ -41,6 +45,7 @@ dev = [
 
 [project.scripts]
 sacm = "cli.main:app"
+sacm-mcp = "sacm.mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["apps", "cli", "sacm"]

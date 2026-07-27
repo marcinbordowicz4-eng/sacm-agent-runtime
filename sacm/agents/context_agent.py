@@ -167,6 +167,7 @@ class ContextAgent(Agent):
             previous_findings=base.previous_findings + skill_summaries,
             test_command=base.test_command,
             build_command=base.build_command,
+            token_budget=base.token_budget,
             skill_state=skill_state,
         )
 

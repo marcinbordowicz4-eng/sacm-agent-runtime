@@ -16,12 +16,15 @@ from sacm.schemas.result import AgentResult
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_result(confidence: float, next_state: str) -> AgentResult:
+def _make_result(
+    confidence: float, next_state: str, *, verified: bool = True
+) -> AgentResult:
     return AgentResult(
         agent_name="TestAgent",
         summary="test",
         confidence=confidence,
         next_state_hint=next_state,
+        actions=[{"type": "TEST_RESULT", "passed": True}] if verified else [],
     )
 
 
@@ -63,6 +66,10 @@ class TestComputeReward:
         result = _make_result(confidence=0.8, next_state="unknown_state")
         reward = self.svc.compute_reward(result)
         assert 0.0 < reward < 1.0
+
+    def test_unverified_result_has_no_training_reward(self):
+        result = _make_result(confidence=1.0, next_state="done", verified=False)
+        assert self.svc.compute_reward(result, task_done=True) == 0.0
 
     @pytest.mark.parametrize("state,expected_gt", [
         ("done", 0.9),

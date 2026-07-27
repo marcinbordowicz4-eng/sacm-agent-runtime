@@ -75,9 +75,12 @@ class FeedbackService:
         successfully, not just individual agent confidence scores which are
         self-reported and can be miscalibrated.
         """
+        from sacm.core.verifier import Verifier
+
         progress = STATE_PROGRESS.get(result.next_state_hint, 0.5)
-        step_reward = result.confidence * progress
-        done_bonus = TASK_DONE_BONUS if task_done else 0.0
+        is_verified = Verifier.has_successful_verification(result)
+        step_reward = result.confidence * progress if is_verified else 0.0
+        done_bonus = TASK_DONE_BONUS if task_done and is_verified else 0.0
         return min(step_reward + done_bonus, 1.0)
 
     def record(

@@ -25,6 +25,7 @@ def test_verifier_done_on_high_confidence():
         summary="done",
         confidence=0.99,
         next_state_hint="reviewing",
+        actions=[{"type": "TEST_RESULT", "passed": True}],
     )
     verifier = Verifier()
     assert verifier.is_done(task, result) is True

@@ -8,6 +8,7 @@ from sacm.core.embedding_service import EmbeddingService
 from sacm.core.event_service import EventService
 from sacm.core.feedback_service import FeedbackService
 from sacm.core.memory_service import MemoryService
+from sacm.core.observability import ObservabilityService
 from sacm.core.router import RouterService
 from sacm.core.state_service import StateService
 from sacm.core.task_service import TaskService
@@ -29,6 +30,7 @@ class Orchestrator:
         self.verifier = Verifier()
         self.embedding_service = EmbeddingService()
         self.feedback_service = FeedbackService(db, self.router_service)
+        self.observability = ObservabilityService()
 
     def run_task(self, task_id: str, max_steps: int = MAX_STEPS) -> dict:
         task = self.task_service.get(task_id)
@@ -37,6 +39,7 @@ class Orchestrator:
 
         self.task_service.update_status(task_id, "planning")
         steps_taken = 0
+        trace = self.observability.start_task(task_id, max_steps)
 
         for step_index in range(max_steps):
             steps_taken = step_index + 1
@@ -46,6 +49,15 @@ class Orchestrator:
 
             history = self.event_service.get_recent_events(task_id)
             memory = self.memory_service.search(task_id, task.description, top_k=8)
+            trace.record(
+                "sacm.retrieve_memory",
+                "retriever",
+                {"task_id": task_id, "query_length": len(task.description), "top_k": 8},
+                {
+                    "chunk_ids": [chunk.id for chunk in memory],
+                    "result_count": len(memory),
+                },
+            )
 
             context_vector = self.embedding_service.embed_task_context(task, history, memory)
             belief_state = self.state_service.get_belief_state(task_id)
@@ -56,6 +68,15 @@ class Orchestrator:
             )
             selected_agent = self.agent_registry.get_by_index(
                 routing_result["selected_agent_index"]
+            )
+            trace.record(
+                "sacm.route_agent",
+                "chain",
+                {"step": step_index + 1},
+                {
+                    "selected_agent": selected_agent.name,
+                    "selected_agent_index": routing_result["selected_agent_index"],
+                },
             )
 
             compiled_context = self.context_compiler.compile(
@@ -71,6 +92,16 @@ class Orchestrator:
             self.state_service.update_belief_state(task_id, routing_result["next_belief"])
 
             done = self.verifier.is_done(task, result)
+            trace.record(
+                "sacm.agent_result",
+                "chain",
+                {"agent_name": selected_agent.name, "step": step_index + 1},
+                {
+                    "next_state": result.next_state_hint,
+                    "confidence": result.confidence,
+                    "verified": self.verifier.has_successful_verification(result),
+                },
+            )
 
             # --- feedback loop: update router weights and agent quality score ---
             self.feedback_service.record(
@@ -93,9 +124,17 @@ class Orchestrator:
         if not final_task:
             raise ValueError(f"Task {task_id} missing after execution")
         events = self.event_service.get_recent_events(task_id, limit=5)
-        return {
+        response = {
             "task_id": task_id,
             "status": final_task.status,
             "steps": steps_taken,
             "last_events": [event.payload for event in events],
         }
+        trace.finish(
+            {
+                "status": response["status"],
+                "steps": steps_taken,
+                "event_count": len(response["last_events"]),
+            }
+        )
+        return response

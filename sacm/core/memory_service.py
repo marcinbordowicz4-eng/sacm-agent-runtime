@@ -36,11 +36,23 @@ class MemoryService:
         return chunk
 
     def search(self, task_id: str, query: str, top_k: int = 8) -> list[MemoryChunk]:
-        del query
+        if top_k < 1:
+            return []
+
+        chunks = self.db.query(MemoryChunk).filter(MemoryChunk.task_id == task_id)
+        if self.db.bind is not None and self.db.bind.dialect.name == "postgresql":
+            query_embedding = self.embedding_service.embed(query)
+            distance = MemoryChunk.embedding.cosine_distance(query_embedding)
+            return (
+                chunks.filter(MemoryChunk.embedding.is_not(None))
+                .order_by(distance, MemoryChunk.importance.desc(), MemoryChunk.created_at.desc())
+                .limit(top_k)
+                .all()
+            )
+
+        # SQLite is used by the test suite and has no pgvector operators.
         return (
-            self.db.query(MemoryChunk)
-            .filter(MemoryChunk.task_id == task_id)
-            .order_by(MemoryChunk.importance.desc(), MemoryChunk.created_at.desc())
+            chunks.order_by(MemoryChunk.importance.desc(), MemoryChunk.created_at.desc())
             .limit(top_k)
             .all()
         )

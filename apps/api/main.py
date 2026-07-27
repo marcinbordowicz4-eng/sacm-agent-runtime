@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from sqlalchemy import text
 
 from apps.api.routes import agents, context, memory, repository, router, tasks
 from sacm.infrastructure.db.models import Base
@@ -9,6 +10,9 @@ from sacm.infrastructure.db.session import engine
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    if engine.dialect.name == "postgresql":
+        with engine.begin() as connection:
+            connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
     Base.metadata.create_all(bind=engine)
     yield
 

@@ -32,3 +32,17 @@ def test_compile_includes_memory():
     mem.content = "Important memory chunk"
     ctx = compiler.compile(task=task, agent=agent, history=[], memory=[mem])
     assert "Important memory chunk" in ctx.relevant_memory
+
+
+def test_compile_caps_context_to_token_budget():
+    compiler = ContextCompiler(token_budget=20)
+    task = make_task()
+    task.description = "x" * 200
+    agent = ClaudeReasonerAgent()
+    mem = MagicMock()
+    mem.content = "y" * 200
+
+    ctx = compiler.compile(task=task, agent=agent, history=[], memory=[mem])
+
+    assert len(ctx.task) <= 80
+    assert ctx.relevant_memory == []

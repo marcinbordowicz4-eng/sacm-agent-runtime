@@ -54,6 +54,25 @@ sacm memory <task-id>
 sacm diff <task-id>
 ```
 
+## MCP server
+
+SACM can run as a local stdio MCP server. It gives a calling coding agent a
+persistent task briefing and explicit repository operations:
+
+- `sacm_advise` creates a SACM task and returns its compiled context.
+- `sacm_run_agents`, `sacm_get_task`, `sacm_get_events`, `sacm_get_memory`, and
+  `sacm_add_memory` manage the agent workflow and persistent context.
+- `sacm_apply_patch`, `sacm_run_verification`, and `sacm_get_diff` perform
+  repository work through the SACM API.
+
+Start the API first, then configure an MCP client to run:
+
+```bash
+sacm-mcp
+```
+
+Set `SACM_API_URL` to the API address accessible from the MCP process.
+
 ## Integrating with another repository
 
 Store SACM metadata in `.sacm.yaml` at the target repository root:
