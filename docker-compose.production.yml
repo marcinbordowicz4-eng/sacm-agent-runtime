@@ -1,10 +1,10 @@
 services:
   traefik:
-    image: traefik:v3.1
+    image: traefik:v3.3
     command:
       - --api.dashboard=false
-      - --providers.docker=true
-      - --providers.docker.exposedbydefault=false
+      - --providers.file.filename=/etc/traefik/dynamic.yml
+      - --providers.file.watch=true
       - --entrypoints.web.address=:80
       - --entrypoints.websecure.address=:443
       - --entrypoints.web.http.redirections.entrypoint.to=websecure
@@ -16,7 +16,7 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./config/traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
       - traefik_data:/letsencrypt
     networks: [proxy]
     restart: unless-stopped
@@ -58,20 +58,6 @@ services:
         condition: service_healthy
       opa:
         condition: service_healthy
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=sacm_proxy
-      - traefik.http.routers.sacm.rule=Host(`sacm.io`)
-      - traefik.http.routers.sacm.entrypoints=websecure
-      - traefik.http.routers.sacm.tls.certresolver=letsencrypt
-      - traefik.http.services.sacm.loadbalancer.server.port=8000
-      - traefik.http.middlewares.sacm-rate.ratelimit.average=20
-      - traefik.http.middlewares.sacm-rate.ratelimit.burst=40
-      - traefik.http.middlewares.sacm-security.headers.stsSeconds=31536000
-      - traefik.http.middlewares.sacm-security.headers.stsIncludeSubdomains=true
-      - traefik.http.middlewares.sacm-security.headers.contentTypeNosniff=true
-      - traefik.http.middlewares.sacm-security.headers.frameDeny=true
-      - traefik.http.routers.sacm.middlewares=sacm-rate,sacm-security
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

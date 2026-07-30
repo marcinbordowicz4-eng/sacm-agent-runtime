@@ -12,7 +12,6 @@ RUN addgroup --system sacm && adduser --system --ingroup sacm sacm
 COPY --chown=sacm:sacm . .
 RUN chown -R sacm:sacm /app
 RUN chmod 0755 /app/docker-entrypoint.sh
-USER sacm
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD python -c "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/ready', timeout=3)"

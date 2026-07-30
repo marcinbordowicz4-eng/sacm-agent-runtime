@@ -1,0 +1,30 @@
+http:
+  routers:
+    sacm:
+      entryPoints:
+        - websecure
+      rule: Host(`sacm.io`)
+      middlewares:
+        - sacm-rate
+        - sacm-security
+      service: sacm
+      tls:
+        certResolver: letsencrypt
+
+  services:
+    sacm:
+      loadBalancer:
+        servers:
+          - url: http://api:8000
+
+  middlewares:
+    sacm-rate:
+      rateLimit:
+        average: 20
+        burst: 40
+    sacm-security:
+      headers:
+        contentTypeNosniff: true
+        frameDeny: true
+        stsIncludeSubdomains: true
+        stsSeconds: 31536000

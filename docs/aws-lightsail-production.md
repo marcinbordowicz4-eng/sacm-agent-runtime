@@ -14,17 +14,14 @@ was created. The static IP was retained and moved to the Xlarge instance.
 
 1. Create DNS `A` records for `sacm.io` and any webhook hostname used by the
    service, pointing to the Lightsail static IP.
-2. Enable IAM Identity Center in the AWS console. Create a customer-managed
-   OAuth 2.0 application whose audience is `sacm-api`, then assign the
-   required users or groups.
+2. Create an Amazon Cognito user in the `sacm-production` user pool. The
+   application client audience is configured in `production.env`.
 3. Set `SACM_OIDC_ISSUER`, `SACM_OIDC_AUDIENCE`, and, if needed,
    `SACM_OIDC_JWKS_URL` in `production.env`. The issuer must exactly match
    token `iss`.
 4. Set a monitored mailbox in `ACME_EMAIL`.
 
-IAM Identity Center is configured in its home Region, which can differ from
-the Lightsail Region. Do not set `SACM_AUTH_REQUIRED=false` to bypass this
-requirement.
+Do not set `SACM_AUTH_REQUIRED=false` to bypass this requirement.
 
 ## Initial server deployment
 

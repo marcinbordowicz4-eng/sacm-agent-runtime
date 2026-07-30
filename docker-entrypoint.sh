@@ -15,4 +15,10 @@ if [ -n "${SACM_GITHUB_WEBHOOK_SECRET_FILE:-}" ]; then
   export SACM_GITHUB_WEBHOOK_SECRET=$(cat "$SACM_GITHUB_WEBHOOK_SECRET_FILE")
 fi
 
+if [ "$(id -u)" = "0" ]; then
+  evidence_root=${SACM_EVIDENCE_ROOT:-/app/.sacm/evidence}
+  install -d -o sacm -g sacm -m 0750 "$evidence_root"
+  exec runuser --preserve-environment -u sacm -- "$@"
+fi
+
 exec "$@"
