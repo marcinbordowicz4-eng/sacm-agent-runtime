@@ -1,6 +1,13 @@
 # SACM Agent Runtime
 
+Licensed under the [Apache License 2.0](LICENSE).
+
 SACM Agent Runtime is a production-oriented MVP for the **Shared Agent Context Model**: a multi-agent orchestration runtime that coordinates specialist agents, persistent memory, routing, repository operations, and API/CLI access for software delivery workflows.
+
+> **Positioning:** SACM is a secure and auditable software-delivery control
+> plane for coding agents. It turns GitHub issues into policy-governed,
+> reproducible draft pull requests with evidence, rather than replacing
+> LangGraph, OpenAI Agents SDK, OpenHands, or coding agents themselves.
 
 ## What SACM is
 

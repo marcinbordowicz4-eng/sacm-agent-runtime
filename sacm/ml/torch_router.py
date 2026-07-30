@@ -27,6 +27,8 @@ class RouterOutput:
 
 
 class AgentRouter(nn.Module):
+    _fsm_mask: torch.Tensor
+
     def __init__(self, context_dim: int = 256, num_agents: int = 11, num_states: int = NUM_STATES):
         super().__init__()
         self.num_states = num_states

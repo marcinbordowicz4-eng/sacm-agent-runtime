@@ -20,4 +20,6 @@ jobs:
       - run: ruff check sacm apps cli tests
       - run: mypy sacm apps cli
       - run: pytest -q
+      - run: DATABASE_URL=sqlite:////tmp/sacm-migration.db sacm-migrate
       - run: python -m build
+      - run: docker build --tag sacm-agent-runtime:ci .
