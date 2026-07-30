@@ -1,5 +1,7 @@
 import os
+import tempfile
 import threading
+from pathlib import Path
 
 import torch
 
@@ -11,8 +13,15 @@ NUM_AGENTS = len(AGENT_CLASSES)
 NUM_STATES = 7
 CONTEXT_DIM = 256
 
-_WEIGHTS_PATH = os.getenv("SACM_ROUTER_WEIGHTS", "./sacm_router_weights.pt")
 _LR = float(os.getenv("SACM_ROUTER_LR", "3e-4"))
+
+
+def _weights_path() -> Path:
+    configured = os.getenv("SACM_ROUTER_WEIGHTS")
+    if configured:
+        return Path(configured).expanduser()
+    state_root = Path(os.getenv("SACM_STATE_ROOT", ".sacm/state")).expanduser()
+    return state_root / "sacm_router_weights.pt"
 
 
 class RouterService:
@@ -72,22 +81,37 @@ class RouterService:
 
     def save_weights(self, path: str | None = None) -> None:
         """Atomically persist model + optimizer state to disk."""
-        dest = path or _WEIGHTS_PATH
-        tmp = dest + ".tmp"
-        with self._lock:
-            torch.save(
-                {
-                    "model": self.model.state_dict(),
-                    "optimizer": self.optimizer.state_dict(),
-                },
-                tmp,
-            )
-        os.replace(tmp, dest)
+        dest = Path(path).expanduser() if path else _weights_path()
+        temporary_path: Path | None = None
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with self._lock, tempfile.NamedTemporaryFile(
+                dir=dest.parent,
+                prefix=f".{dest.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+                torch.save(
+                    {
+                        "model": self.model.state_dict(),
+                        "optimizer": self.optimizer.state_dict(),
+                    },
+                    temporary,
+                )
+            os.replace(temporary_path, dest)
+        except OSError as exc:
+            raise RuntimeError(
+                f"Cannot persist router weights at {dest}: {exc}"
+            ) from exc
+        finally:
+            if temporary_path and temporary_path.exists():
+                temporary_path.unlink()
 
     def _load_weights_safe(self, path: str | None = None) -> None:
         """Load weights if a checkpoint exists; skip gracefully on any error."""
-        src = path or _WEIGHTS_PATH
-        if not os.path.exists(src):
+        src = Path(path).expanduser() if path else _weights_path()
+        if not src.exists():
             return
         try:
             state = torch.load(src, map_location="cpu", weights_only=True)

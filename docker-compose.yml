@@ -17,7 +17,10 @@ services:
       SACM_TEMPORAL_ADDRESS: temporal:7233
       SACM_TEMPORAL_NAMESPACE: default
       SACM_TEMPORAL_TASK_QUEUE: sacm-runs
+      SACM_HOST_REPOSITORY_ROOT: ${SACM_HOST_REPOSITORY_ROOT:-./repositories}
       SACM_REPOSITORY_ROOT: ${SACM_CONTAINER_REPOSITORY_ROOT:-/repositories}
+      SACM_WORKTREE_ROOT: ${SACM_CONTAINER_WORKTREE_ROOT:-/worktrees}
+      SACM_STATE_ROOT: /app/.sacm/state
     depends_on:
       postgres:
         condition: service_healthy
@@ -27,6 +30,8 @@ services:
         condition: service_healthy
     volumes:
       - ${SACM_HOST_REPOSITORY_ROOT:-./repositories}:${SACM_CONTAINER_REPOSITORY_ROOT:-/repositories}:rw
+      - ${SACM_HOST_WORKTREE_ROOT:-./worktrees}:${SACM_CONTAINER_WORKTREE_ROOT:-/worktrees}:rw
+      - router_state:/app/.sacm/state
 
   temporal-worker:
     build: .
@@ -119,3 +124,4 @@ services:
 volumes:
   postgres_data:
   mlflow_data:
+  router_state:

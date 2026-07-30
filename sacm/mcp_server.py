@@ -39,7 +39,20 @@ def _request(method: str, path: str, payload: dict[str, Any] | None = None) -> A
         headers=_request_headers(),
         timeout=120,
     )
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        try:
+            body = response.json()
+            detail = body.get("detail", body)
+            error_code = body.get("error_code")
+        except ValueError:
+            detail = response.text.strip() or response.reason_phrase
+            error_code = None
+        label = f" [{error_code}]" if error_code else ""
+        raise RuntimeError(
+            f"SACM API {response.status_code}{label} for {method} {path}: {detail}"
+        ) from exc
     return response.json()
 
 
@@ -123,38 +136,49 @@ def sacm_add_memory(
 
 
 @mcp.tool()
-def sacm_apply_patch(repository_path: str, patch: str) -> dict[str, Any]:
-    """Apply a unified diff patch to a repository."""
+def sacm_apply_patch(
+    repository_path: str, patch: str, task_id: str | None = None
+) -> dict[str, Any]:
+    """Apply a patch and persist its implementation context for a SACM task."""
     return _request(
         "POST",
         "/repository/apply-patch",
         {
             "repo_path": _repository_path(repository_path),
             "patch": patch,
+            "task_id": task_id,
         },
     )
 
 
 @mcp.tool()
-def sacm_run_verification(repository_path: str, command: str) -> dict[str, Any]:
-    """Run an explicit build, test, or verification command in a repository."""
+def sacm_run_verification(
+    repository_path: str, command: str, task_id: str | None = None
+) -> dict[str, Any]:
+    """Run verification and persist its result for a SACM task."""
     return _request(
         "POST",
         "/repository/run-tests",
         {
             "repo_path": _repository_path(repository_path),
             "command": command,
+            "task_id": task_id,
         },
     )
 
 
 @mcp.tool()
-def sacm_get_diff(repository_path: str) -> dict[str, Any]:
-    """Return the current Git diff for a repository."""
+def sacm_get_diff(
+    repository_path: str, task_id: str | None = None
+) -> dict[str, Any]:
+    """Return the Git diff and persist its implementation context."""
     return _request(
         "POST",
         "/repository/diff",
-        {"repo_path": _repository_path(repository_path)},
+        {
+            "repo_path": _repository_path(repository_path),
+            "task_id": task_id,
+        },
     )
 
 

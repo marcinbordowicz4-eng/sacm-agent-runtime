@@ -89,7 +89,9 @@ persistent task briefing and explicit repository operations:
 - `sacm_run_agents`, `sacm_get_task`, `sacm_get_events`, `sacm_get_memory`, and
   `sacm_add_memory` manage the agent workflow and persistent context.
 - `sacm_apply_patch`, `sacm_run_verification`, and `sacm_get_diff` perform
-  repository work through the SACM API.
+  repository work through the SACM API. Pass the `task_id` returned by
+  `sacm_advise` so implementation hashes, changed files, verification results,
+  and concise memory updates are persisted with the task.
 
 Start the API first, then configure an MCP client to run:
 

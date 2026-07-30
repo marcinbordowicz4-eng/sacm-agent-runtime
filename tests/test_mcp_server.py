@@ -1,4 +1,5 @@
 
+import httpx
 import pytest
 
 from sacm import mcp_server
@@ -94,3 +95,39 @@ def test_agent_lifecycle_tools_call_expected_endpoints(monkeypatch):
             },
         ),
     ]
+
+
+def test_request_surfaces_api_error_detail(monkeypatch):
+    request = httpx.Request("POST", "http://127.0.0.1:8000/repository/run-tests")
+    response = httpx.Response(
+        409,
+        request=request,
+        json={
+            "detail": "Git executable is unavailable in the SACM runtime image.",
+            "error_code": "repository_operation_failed",
+        },
+    )
+    monkeypatch.setattr(mcp_server.httpx, "request", lambda *args, **kwargs: response)
+
+    with pytest.raises(RuntimeError, match="repository_operation_failed"):
+        mcp_server._request("POST", "/repository/run-tests", {})
+
+
+def test_repository_tools_forward_task_id(tmp_path, monkeypatch):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    calls = []
+
+    def request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(mcp_server, "_request", request)
+
+    mcp_server.sacm_apply_patch(str(repository), "diff", task_id="task-1")
+    mcp_server.sacm_run_verification(
+        str(repository), "pytest", task_id="task-1"
+    )
+    mcp_server.sacm_get_diff(str(repository), task_id="task-1")
+
+    assert [call[2]["task_id"] for call in calls] == ["task-1", "task-1", "task-1"]

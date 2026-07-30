@@ -191,7 +191,16 @@ class TestRouterServicePersistence:
         path = str(tmp_path / "weights.pt")
         svc.save_weights(path)
         assert os.path.exists(path)
-        assert not os.path.exists(path + ".tmp"), "Temp file must be cleaned up"
+        assert not list(tmp_path.glob(".weights.pt.*.tmp"))
+
+    def test_save_creates_state_directory(self, tmp_path):
+        from sacm.core.router import RouterService
+
+        path = tmp_path / "state" / "router" / "weights.pt"
+
+        RouterService().save_weights(str(path))
+
+        assert path.exists()
 
 
 # ---------------------------------------------------------------------------

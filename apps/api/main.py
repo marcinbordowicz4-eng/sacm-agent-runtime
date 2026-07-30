@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from apps.api.routes import (
@@ -15,11 +16,13 @@ from apps.api.routes import (
     runs,
     tasks,
 )
+from sacm.adapters.repository_adapter import RepositoryError, RepositoryPathError
 from sacm.core.auth_service import (
     require_authenticated_actor,
     require_legacy_api_enabled,
     validate_production_configuration,
 )
+from sacm.core.repository_audit_service import TaskContextError
 from sacm.infrastructure.db.session import engine
 
 
@@ -32,6 +35,30 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="SACM Agent Runtime", version="0.1.0", lifespan=lifespan)
+
+
+@app.exception_handler(RepositoryPathError)
+def repository_path_error(_: Request, exc: RepositoryPathError) -> JSONResponse:
+    return JSONResponse(
+        status_code=400,
+        content={"detail": str(exc), "error_code": "repository_path_invalid"},
+    )
+
+
+@app.exception_handler(RepositoryError)
+def repository_operation_error(_: Request, exc: RepositoryError) -> JSONResponse:
+    return JSONResponse(
+        status_code=409,
+        content={"detail": str(exc), "error_code": "repository_operation_failed"},
+    )
+
+
+@app.exception_handler(TaskContextError)
+def task_context_error(_: Request, exc: TaskContextError) -> JSONResponse:
+    return JSONResponse(
+        status_code=404,
+        content={"detail": str(exc), "error_code": "task_context_not_found"},
+    )
 
 legacy_dependencies = [
     Depends(require_authenticated_actor),

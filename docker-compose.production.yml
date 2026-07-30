@@ -43,13 +43,19 @@ services:
       SACM_DIRECT_ACTION_API_ENABLED: "false"
       SACM_WORKFLOW_BACKEND: local
       SACM_DOCKER_RUNTIME: runc
+      SACM_HOST_REPOSITORY_ROOT: ${SACM_HOST_REPOSITORY_ROOT:?Set SACM_HOST_REPOSITORY_ROOT}
+      SACM_REPOSITORY_ROOT: /repositories
+      SACM_WORKTREE_ROOT: /worktrees
+      SACM_STATE_ROOT: /app/.sacm/state
     secrets:
       - postgres_password
       - evidence_hmac_key
       - github_webhook_secret
     volumes:
       - ${SACM_HOST_REPOSITORY_ROOT:?Set SACM_HOST_REPOSITORY_ROOT}:/repositories:rw
+      - ${SACM_HOST_WORKTREE_ROOT:?Set SACM_HOST_WORKTREE_ROOT}:/worktrees:rw
       - evidence_data:/app/.sacm/evidence
+      - router_state:/app/.sacm/state
     networks: [proxy, backend]
     depends_on:
       postgres:
@@ -122,6 +128,7 @@ volumes:
   postgres_data:
   redis_data:
   evidence_data:
+  router_state:
   traefik_data:
 
 secrets:

@@ -1,6 +1,11 @@
+import subprocess
+
 import pytest
 
-from sacm.adapters.repository_adapter import RepositoryAdapter
+from sacm.adapters.repository_adapter import (
+    RepositoryAdapter,
+    RepositoryOperationError,
+)
 
 
 @pytest.fixture
@@ -32,6 +37,34 @@ def test_repository_path_must_be_inside_configured_root(tmp_path, monkeypatch):
         RepositoryAdapter(str(blocked_repo))
 
 
+def test_repository_path_allows_configured_worktree_root(tmp_path, monkeypatch):
+    repository_root = tmp_path / "repositories"
+    repository_root.mkdir()
+    worktree_root = tmp_path / "worktrees"
+    worktree_root.mkdir()
+    worktree = worktree_root / "sacm" / "task"
+    worktree.mkdir(parents=True)
+    monkeypatch.setenv("SACM_REPOSITORY_ROOT", str(repository_root))
+    monkeypatch.setenv("SACM_WORKTREE_ROOT", str(worktree_root))
+
+    assert RepositoryAdapter(str(worktree)).repo_path == worktree.resolve()
+
+
+def test_repository_path_translates_host_mount_to_container_root(
+    tmp_path, monkeypatch
+):
+    host_root = tmp_path / "host"
+    container_root = tmp_path / "container"
+    (host_root / "project").mkdir(parents=True)
+    (container_root / "project").mkdir(parents=True)
+    monkeypatch.setenv("SACM_HOST_REPOSITORY_ROOT", str(host_root))
+    monkeypatch.setenv("SACM_REPOSITORY_ROOT", str(container_root))
+
+    adapter = RepositoryAdapter(str(host_root / "project"))
+
+    assert adapter.repo_path == (container_root / "project").resolve()
+
+
 def test_read_file(temp_repo):
     adapter = RepositoryAdapter(str(temp_repo))
     content = adapter.read_file("README.md")
@@ -50,6 +83,45 @@ def test_create_worktree_rejects_unsafe_branch_name(temp_repo, branch_name):
 
     with pytest.raises(ValueError, match="Invalid worktree branch name"):
         adapter.create_worktree(branch_name)
+
+
+def test_create_worktree_is_idempotent(tmp_path, monkeypatch):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=repository,
+        check=True,
+    )
+    (repository / "README.md").write_text("# Test")
+    subprocess.run(["git", "add", "."], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-qm", "initial"], cwd=repository, check=True)
+    worktree_root = tmp_path / "worktrees"
+    monkeypatch.setenv("SACM_WORKTREE_ROOT", str(worktree_root))
+    adapter = RepositoryAdapter(str(repository))
+
+    first = adapter.create_worktree("sacm/task/workspace")
+    second = adapter.create_worktree("sacm/task/workspace")
+
+    assert second == first
+
+
+def test_create_worktree_reports_missing_git(temp_repo, monkeypatch):
+    def missing_git(*args, **kwargs):
+        raise FileNotFoundError
+
+    monkeypatch.setattr(
+        "sacm.adapters.repository_adapter.subprocess.run", missing_git
+    )
+
+    with pytest.raises(RepositoryOperationError, match="Git executable"):
+        RepositoryAdapter(str(temp_repo)).create_worktree("sacm/task/workspace")
 
 
 def test_run_command_does_not_invoke_a_shell(temp_repo, monkeypatch):

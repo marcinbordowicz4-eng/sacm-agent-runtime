@@ -17,7 +17,9 @@ fi
 
 if [ "$(id -u)" = "0" ]; then
   evidence_root=${SACM_EVIDENCE_ROOT:-/app/.sacm/evidence}
+  state_root=${SACM_STATE_ROOT:-/app/.sacm/state}
   install -d -o sacm -g sacm -m 0750 "$evidence_root"
+  install -d -o sacm -g sacm -m 0750 "$state_root"
   exec runuser --preserve-environment -u sacm -- "$@"
 fi
 

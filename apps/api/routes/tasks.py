@@ -51,7 +51,12 @@ def run_task(task_id: str, db: Session = Depends(get_db)) -> dict:
     task = TaskService(db).get(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    return Orchestrator(db).run_task(task_id)
+    try:
+        return Orchestrator(db).run_task(task_id)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=409, detail=f"Task execution failed: {exc}"
+        ) from exc
 
 
 @router.get("/{task_id}/events", response_model=list[ContextEventRead])
