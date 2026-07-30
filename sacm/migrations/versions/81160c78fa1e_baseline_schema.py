@@ -6,6 +6,7 @@ Revision ID: 81160c78fa1e
 from typing import Sequence, Union
 
 from alembic import op
+
 from sacm.infrastructure.db.models import Base
 
 revision: str = "81160c78fa1e"
