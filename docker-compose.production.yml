@@ -1,0 +1,147 @@
+services:
+  traefik:
+    image: traefik:v3.1
+    command:
+      - --api.dashboard=false
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --certificatesresolvers.letsencrypt.acme.tlschallenge=true
+      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?Set ACME_EMAIL}
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_data:/letsencrypt
+    networks: [proxy]
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  api:
+    build: .
+    env_file: ${SACM_ENV_FILE:-production.env}
+    environment:
+      SACM_ENVIRONMENT: production
+      SACM_DATABASE_HOST: postgres
+      SACM_DATABASE_PORT: "5432"
+      SACM_DATABASE_NAME: sacm
+      SACM_DATABASE_USER: sacm
+      SACM_DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
+      SACM_EVIDENCE_HMAC_KEY_FILE: /run/secrets/evidence_hmac_key
+      SACM_GITHUB_WEBHOOK_SECRET_FILE: /run/secrets/github_webhook_secret
+      REDIS_URL: redis://redis:6379
+      SACM_OPA_URL: http://opa:8181
+      SACM_OPA_FAIL_CLOSED: "true"
+      SACM_AUTH_REQUIRED: "true"
+      SACM_LEGACY_API_ENABLED: "false"
+      SACM_DIRECT_ACTION_API_ENABLED: "false"
+      SACM_WORKFLOW_BACKEND: local
+      SACM_DOCKER_RUNTIME: runc
+    secrets:
+      - postgres_password
+      - evidence_hmac_key
+      - github_webhook_secret
+    volumes:
+      - ${SACM_HOST_REPOSITORY_ROOT:?Set SACM_HOST_REPOSITORY_ROOT}:/repositories:rw
+      - evidence_data:/app/.sacm/evidence
+    networks: [proxy, backend]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      opa:
+        condition: service_healthy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=sacm_proxy
+      - traefik.http.routers.sacm.rule=Host(`sacm.io`)
+      - traefik.http.routers.sacm.entrypoints=websecure
+      - traefik.http.routers.sacm.tls.certresolver=letsencrypt
+      - traefik.http.services.sacm.loadbalancer.server.port=8000
+      - traefik.http.middlewares.sacm-rate.ratelimit.average=20
+      - traefik.http.middlewares.sacm-rate.ratelimit.burst=40
+      - traefik.http.middlewares.sacm-security.headers.stsSeconds=31536000
+      - traefik.http.middlewares.sacm-security.headers.stsIncludeSubdomains=true
+      - traefik.http.middlewares.sacm-security.headers.contentTypeNosniff=true
+      - traefik.http.middlewares.sacm-security.headers.frameDeny=true
+      - traefik.http.routers.sacm.middlewares=sacm-rate,sacm-security
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: sacm
+      POSTGRES_USER: sacm
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sacm -d sacm"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  opa:
+    image: openpolicyagent/opa:0.67.1-static
+    command: ["run", "--server", "--addr=:8181", "/policies"]
+    volumes:
+      - ./config/opa:/policies:ro
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "opa", "eval", "--format=raw", "data.sacm.decision"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  proxy:
+    name: sacm_proxy
+  backend:
+    internal: true
+
+volumes:
+  postgres_data:
+  redis_data:
+  evidence_data:
+  traefik_data:
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password
+  evidence_hmac_key:
+    file: ./secrets/evidence_hmac_key
+  github_webhook_secret:
+    file: ./secrets/github_webhook_secret

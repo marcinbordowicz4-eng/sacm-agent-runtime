@@ -4,6 +4,7 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     environment:
+      SACM_ENVIRONMENT: ${SACM_ENVIRONMENT:-development}
       DATABASE_URL: postgresql+psycopg2://sacm:${SACM_POSTGRES_PASSWORD:-sacm-local-only}@postgres:5432/sacm
       REDIS_URL: redis://redis:6379
       SACM_OTEL_ENABLED: ${SACM_OTEL_ENABLED:-false}
@@ -16,6 +17,7 @@ services:
       SACM_TEMPORAL_ADDRESS: temporal:7233
       SACM_TEMPORAL_NAMESPACE: default
       SACM_TEMPORAL_TASK_QUEUE: sacm-runs
+      SACM_REPOSITORY_ROOT: ${SACM_CONTAINER_REPOSITORY_ROOT:-/repositories}
     depends_on:
       postgres:
         condition: service_healthy
@@ -23,6 +25,8 @@ services:
         condition: service_healthy
       opa:
         condition: service_healthy
+    volumes:
+      - ${SACM_HOST_REPOSITORY_ROOT:-./repositories}:${SACM_CONTAINER_REPOSITORY_ROOT:-/repositories}:rw
 
   temporal-worker:
     build: .
@@ -73,7 +77,7 @@ services:
     volumes:
       - ./config/opa:/policies:ro
     healthcheck:
-      test: ["CMD", "opa", "eval", "--format=raw", "data.sacm.allow"]
+      test: ["CMD", "opa", "eval", "--format=raw", "data.sacm.decision"]
       interval: 5s
       timeout: 3s
       retries: 20

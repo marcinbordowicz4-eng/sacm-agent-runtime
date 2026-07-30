@@ -1,4 +1,5 @@
 from sacm.agents.base import Agent
+from sacm.core.repository_config import load_repository_config
 from sacm.infrastructure.db.models import ContextEvent, MemoryChunk, Task
 from sacm.schemas.context import AgentContext
 from sacm.schemas.contracts import AgentTaskV1
@@ -15,11 +16,13 @@ class ContextCompiler:
         history: list[ContextEvent],
         memory: list[MemoryChunk],
     ) -> AgentContext:
+        repository_config = load_repository_config(task.target_repo_path)
         task_text = self._trim(task.description, self.token_budget)
         goal = self._trim(f"Complete task: {task.title}", self.token_budget)
         constraints = [
             f"Agent role: {agent.role}",
             f"Token budget: {self.token_budget}",
+            *(repository_config.constraints if repository_config else []),
         ]
         remaining = self.token_budget - self._estimate_tokens(task_text)
         remaining -= self._estimate_tokens(goal)
@@ -46,6 +49,12 @@ class ContextCompiler:
             files={},
             constraints=constraints,
             previous_findings=previous_findings,
+            test_command=(
+                repository_config.commands.test if repository_config else None
+            ),
+            build_command=(
+                repository_config.commands.build if repository_config else None
+            ),
             token_budget=self.token_budget,
         )
 

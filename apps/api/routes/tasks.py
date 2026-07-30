@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from sacm.core.bdd_traceability import BddTraceabilityService
 from sacm.core.cost_service import CostService
 from sacm.core.event_service import EventService
 from sacm.core.memory_service import MemoryService
@@ -14,11 +16,26 @@ from sacm.schemas.task import TaskCreate, TaskRead
 
 router = APIRouter()
 
+class BddTaskCreate(TaskCreate):
+    jira_key: str | None = Field(default=None, pattern=r"^[A-Z][A-Z0-9]+-\d+$")
+
+
+class BusinessImpactRequest(BaseModel):
+    base_revision: str = Field(min_length=1)
+    target_revision: str = Field(min_length=1)
+
 
 @router.post("", response_model=TaskRead)
 def create_task(payload: TaskCreate, db: Session = Depends(get_db)) -> TaskRead:
     task = TaskService(db).create(payload)
     return TaskRead.model_validate(task)
+
+
+@router.post("/bdd")
+def create_bdd_task(payload: BddTaskCreate, db: Session = Depends(get_db)) -> dict:
+    task = TaskService(db).create(TaskCreate(**payload.model_dump(exclude={"jira_key"})))
+    requirement = BddTraceabilityService(db).register(task, payload.jira_key)
+    return {"task": TaskRead.model_validate(task), "requirement": requirement}
 
 
 @router.get("/{task_id}", response_model=TaskRead)
@@ -80,3 +97,18 @@ def task_costs(task_id: str, db: Session = Depends(get_db)) -> dict:
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return CostService(db).summarize_task(task_id)
+
+
+@router.post("/{task_id}/business-impact")
+def business_impact(
+    task_id: str, payload: BusinessImpactRequest, db: Session = Depends(get_db)
+) -> dict:
+    task = TaskService(db).get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    try:
+        return BddTraceabilityService(db).analyze_git_impact(
+            task, payload.base_revision, payload.target_revision
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

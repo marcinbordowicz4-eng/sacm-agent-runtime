@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Literal
 
 from sacm.schemas.context import AgentContext
 from sacm.schemas.contracts import (
@@ -46,8 +46,12 @@ class Agent(ABC):
         )
 
     @property
-    def contract_role(self) -> str:
-        role_map = {
+    def contract_role(
+        self,
+    ) -> Literal["reasoner", "coder", "reviewer", "tester", "security"]:
+        role_map: dict[
+            str, Literal["reasoner", "coder", "reviewer", "tester", "security"]
+        ] = {
             "reasoning": "reasoner",
             "agent-sdk-reasoning": "reasoner",
             "architecture": "reasoner",

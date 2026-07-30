@@ -1,0 +1,9 @@
+appId: ${APP_ID}
+---
+- launchApp
+- tapOn:
+    id: "network-vara-testnet"
+- tapOn:
+    id: "submit-transaction"
+- assertVisible:
+    id: "transaction-pending"

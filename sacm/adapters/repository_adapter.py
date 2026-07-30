@@ -1,5 +1,6 @@
 import os
 import re
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -7,6 +8,13 @@ from pathlib import Path
 class RepositoryAdapter:
     def __init__(self, repo_path: str):
         self.repo_path = Path(repo_path).resolve()
+        repository_root = os.getenv("SACM_REPOSITORY_ROOT")
+        if repository_root:
+            allowed_root = Path(repository_root).resolve()
+            if self.repo_path != allowed_root and allowed_root not in self.repo_path.parents:
+                raise ValueError(
+                    f"Repository path must be inside SACM_REPOSITORY_ROOT ({allowed_root})."
+                )
 
     def list_files(self) -> list[str]:
         result: list[str] = []
@@ -78,9 +86,11 @@ class RepositoryAdapter:
             raise RuntimeError(f"Failed to apply patch: {proc.stderr.strip()}")
 
     def run_command(self, command: str) -> dict:
+        arguments = shlex.split(command)
+        if not arguments:
+            raise ValueError("Command must not be empty.")
         result = subprocess.run(
-            command,
-            shell=True,
+            arguments,
             cwd=self.repo_path,
             capture_output=True,
             text=True,

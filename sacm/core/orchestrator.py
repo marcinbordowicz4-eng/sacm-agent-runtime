@@ -139,17 +139,18 @@ class Orchestrator:
         if not final_task:
             raise ValueError(f"Task {task_id} missing after execution")
         events = self.event_service.get_recent_events(task_id, limit=5)
+        last_events = [event.payload for event in events]
         response = {
             "task_id": task_id,
             "status": final_task.status,
             "steps": steps_taken,
-            "last_events": [event.payload for event in events],
+            "last_events": last_events,
         }
         trace.finish(
             {
                 "status": response["status"],
                 "steps": steps_taken,
-                "event_count": len(response["last_events"]),
+                "event_count": len(last_events),
             }
         )
         return response

@@ -1,0 +1,9 @@
+appId: ${APP_ID}
+---
+- launchApp
+- tapOn:
+    id: "network-sepolia"
+- tapOn:
+    id: "submit-transaction"
+- assertVisible:
+    id: "transaction-pending"

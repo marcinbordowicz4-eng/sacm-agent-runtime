@@ -1,0 +1,7 @@
+appId: ${APP_ID}
+---
+- launchApp
+- tapOn:
+    id: "demo-mode"
+- assertVisible:
+    id: "demo-mode-active"

@@ -224,6 +224,9 @@ class Run(Base):
     approvals: Mapped[list["Approval"]] = relationship(
         "Approval", back_populates="run", cascade="all, delete-orphan"
     )
+    webhook_deliveries: Mapped[list["GitHubWebhookDelivery"]] = relationship(
+        "GitHubWebhookDelivery", back_populates="run", cascade="all, delete-orphan"
+    )
 
 
 class RunStep(Base):
@@ -297,6 +300,17 @@ class Approval(Base):
     decision_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     run: Mapped["Run"] = relationship("Run", back_populates="approvals")
+
+
+class GitHubWebhookDelivery(Base):
+    __tablename__ = "github_webhook_deliveries"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    delivery_id: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), nullable=False, index=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    run: Mapped["Run"] = relationship("Run", back_populates="webhook_deliveries")
 
 
 class SkillRecord(Base):

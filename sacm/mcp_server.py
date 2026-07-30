@@ -11,6 +11,7 @@ from mcp.server.fastmcp import FastMCP
 
 _API_URL = os.getenv("SACM_API_URL", "http://127.0.0.1:8000").rstrip("/")
 
+
 mcp = FastMCP(
     "SACM Agent Runtime",
     instructions=(
@@ -23,11 +24,19 @@ mcp = FastMCP(
 )
 
 
+def _request_headers() -> dict[str, str]:
+    api_token = os.getenv("SACM_API_TOKEN")
+    if api_token:
+        return {"Authorization": f"Bearer {api_token}"}
+    return {"X-SACM-Actor": os.getenv("SACM_ACTOR_ID", "copilot-cli")}
+
+
 def _request(method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
     response = httpx.request(
         method,
         f"{_API_URL}{path}",
         json=payload,
+        headers=_request_headers(),
         timeout=120,
     )
     response.raise_for_status()

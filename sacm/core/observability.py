@@ -3,7 +3,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from threading import Lock
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from langsmith import Client
 from opentelemetry import context, metrics, trace
@@ -165,7 +165,10 @@ class OpenTelemetryService:
             raise ValueError("duration_ms cannot be negative.")
         if not self.enabled:
             return
-        attributes = {"sacm.tool.name": tool, "sacm.tool.returncode": returncode}
+        attributes: dict[str, str | int] = {
+            "sacm.tool.name": tool,
+            "sacm.tool.returncode": returncode,
+        }
         current_span = trace.get_current_span()
         current_span.set_attribute("sacm.tool.name", tool)
         current_span.set_attribute("sacm.tool.duration_ms", duration_ms)
@@ -181,12 +184,14 @@ class TaskTrace:
     project_name: str
     otel: OpenTelemetryService
     span: Any | None = None
-    span_context: object | None = None
+    span_context: Any | None = None
 
     def record(
         self,
         name: str,
-        run_type: str,
+        run_type: Literal[
+            "tool", "chain", "llm", "retriever", "embedding", "prompt", "parser"
+        ],
         inputs: dict[str, Any],
         outputs: dict[str, Any],
     ) -> None:

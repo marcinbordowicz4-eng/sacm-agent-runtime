@@ -59,12 +59,14 @@ dev = [
     "ruff>=0.3.0",
     "mypy>=1.8.0",
     "httpx>=0.26.0",
+    "build>=1.2.0",
 ]
 
 [project.scripts]
 sacm = "cli.main:app"
 sacm-mcp = "sacm.mcp_server:main"
 sacm-temporal-worker = "sacm.workflows.temporal_worker:main"
+sacm-migrate = "sacm.migrate:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["apps", "cli", "sacm"]

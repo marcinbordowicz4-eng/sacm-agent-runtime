@@ -278,3 +278,17 @@ docker-compose up --build
 ```
 
 The default container starts `uvicorn apps.api.main:app --host 0.0.0.0 --port 8000`.
+
+## Production deployment
+
+The included Compose stack is for local development only. A production process
+must run database migrations before accepting traffic and set
+`SACM_ENVIRONMENT=production`. Startup then refuses to run unless OIDC is
+enabled, PostgreSQL is configured, OPA is fail-closed, evidence signing is
+configured, and legacy/direct action APIs are disabled. Terminate TLS and
+enforce request limits at the deployment ingress; expose only `/health` and
+`/ready` to infrastructure probes.
+
+The image runs `sacm-migrate` before the API. For a non-container deployment,
+run `sacm-migrate` once per release under the same `DATABASE_URL` before
+starting application replicas.

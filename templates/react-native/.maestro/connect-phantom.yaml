@@ -1,0 +1,7 @@
+appId: ${APP_ID}
+---
+- launchApp
+- tapOn:
+    id: "wallet-connect-phantom"
+- assertVisible:
+    id: "wallet-connected"

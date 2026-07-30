@@ -1,0 +1,406 @@
+import hashlib
+import json
+
+import pytest
+
+from sacm.core.event_service import EventService
+from sacm.core.evidence_service import EvidenceService
+from sacm.core.local_workflow import LocalWorkflow
+from sacm.core.run_service import RunService
+from sacm.core.workflow_backend import LocalWorkflowBackend, workflow_backend
+from sacm.core.workspace import WorkspaceManager, WorkspaceRef
+from sacm.schemas.context import AgentContext
+from sacm.schemas.contracts import AgentResultV1, AgentTaskV1
+from sacm.schemas.result import AgentResult
+from sacm.schemas.run import RunCreate
+
+
+def _create_run(db):
+    return RunService(db).create(
+        RunCreate(title="Fix tests", description="Fix the failing checkout test")
+    )
+
+
+def test_run_events_are_ordered_and_hash_chained(db):
+    service = RunService(db)
+    run = _create_run(db)
+    service.transition(run.id, "PLANNING", "RunStarted")
+    service.transition(run.id, "IMPLEMENTING", "WorkflowImplementing")
+
+    events = service.events(run.id)
+
+    assert [event.sequence for event in events] == [1, 2, 3]
+    assert events[1].previous_event_hash == events[0].event_hash
+    payload = {
+        "run_id": run.id,
+        "step_id": None,
+        "sequence": events[2].sequence,
+        "event_type": events[2].event_type,
+        "actor": events[2].actor,
+        "payload": events[2].payload,
+        "previous_event_hash": events[2].previous_event_hash,
+        "occurred_at": events[2].occurred_at.isoformat(),
+    }
+    assert events[2].event_hash == hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def test_run_rejects_invalid_state_transition(db):
+    run = _create_run(db)
+
+    with pytest.raises(ValueError, match="Invalid transition"):
+        RunService(db).transition(run.id, "COMPLETED", "RunCompleted")
+
+
+def test_run_requires_evidence_before_completion(db, tmp_path):
+    service = RunService(db)
+    run = _create_run(db)
+    service.transition(run.id, "PLANNING", "RunStarted")
+    service.transition(run.id, "IMPLEMENTING", "WorkflowImplementing")
+    service.transition(run.id, "REVIEWING", "WorkflowReviewing")
+    service.transition(run.id, "TESTING", "WorkflowTesting")
+    service.transition(run.id, "DELIVERING", "WorkflowDelivering")
+
+    with pytest.raises(ValueError, match="evidence pack"):
+        service.transition(run.id, "COMPLETED", "RunCompleted")
+
+    EvidenceService(db, root=str(tmp_path)).build(run.id)
+    assert service.transition(run.id, "COMPLETED", "RunCompleted").status == "COMPLETED"
+
+
+def test_failed_step_can_be_retried_without_duplication(db):
+    service = RunService(db)
+    run = _create_run(db)
+    step = service.add_step(run.id, "test", {}, f"{run.id}:test")
+    service.start_step(run.id, step.id)
+    service.fail_step(run.id, step.id, {"type": "TestFailure"})
+
+    retried = service.retry_step(run.id, step.id)
+
+    assert retried.status == "PENDING"
+    assert retried.retry_count == 1
+    assert service.add_step(run.id, "test", {}, f"{run.id}:test").id == step.id
+
+
+def test_failed_run_can_resume_and_cancelled_run_cannot(db):
+    service = RunService(db)
+    run = _create_run(db)
+    service.transition(run.id, "PLANNING", "RunStarted")
+    service.transition(run.id, "FAILED", "RunFailed")
+
+    resumed = service.resume(run.id)
+    assert resumed.status == "PLANNING"
+    assert resumed.completed_at is None
+    assert service.cancel(run.id).status == "CANCELLED"
+    with pytest.raises(ValueError, match="cannot be cancelled"):
+        service.cancel(run.id)
+
+
+def test_recovery_marks_interrupted_step_failed_after_process_restart(db):
+    service = RunService(db)
+    run = _create_run(db)
+    service.transition(run.id, "PLANNING", "RunStarted")
+    service.transition(run.id, "IMPLEMENTING", "WorkflowImplementing")
+    step = service.add_step(run.id, "implementation", {}, f"{run.id}:implementation")
+    service.start_step(run.id, step.id)
+
+    recovered = RunService(db).recover_interrupted(run.id)
+
+    assert recovered.status == "FAILED"
+    assert RunService(db).list_steps(run.id)[0].status == "FAILED"
+    assert RunService(db).events(run.id)[-1].event_type == "RunRecoveryDetected"
+
+
+def test_local_workflow_backend_is_default(db, monkeypatch):
+    monkeypatch.delenv("SACM_WORKFLOW_BACKEND", raising=False)
+
+    assert isinstance(workflow_backend(db), LocalWorkflowBackend)
+
+
+def test_evidence_pack_contains_manifest_events_and_checksums(db, tmp_path):
+    service = RunService(db)
+    run = _create_run(db)
+    service.transition(run.id, "PLANNING", "RunStarted")
+
+    pack = EvidenceService(db, root=str(tmp_path)).build(run.id)
+    directory = tmp_path / run.id
+
+    assert (directory / "run-manifest.json").exists()
+    assert (directory / "events.jsonl").exists()
+    assert (directory / "checksums.sha256").exists()
+    assert pack.manifest_hash == hashlib.sha256(
+        (directory / "run-manifest.json").read_bytes()
+    ).hexdigest()
+
+
+def test_evidence_pack_records_artifacts_and_provenance(db, tmp_path, monkeypatch):
+    run = _create_run(db)
+    task = AgentTaskV1(
+        run_id=run.id,
+        step_id="step-1",
+        role="reviewer",
+        objective="Review the patch.",
+        token_budget=100,
+        timeout_seconds=60,
+    )
+    result = AgentResultV1(
+        run_id=run.id,
+        step_id="step-1",
+        status="COMPLETED",
+        summary="Reviewed the change.",
+        artifacts=[
+            {
+                "artifact_type": "diff",
+                "metadata": {"content": "diff --git a/a.py b/a.py\n"},
+            },
+            {
+                "artifact_type": "verification",
+                "metadata": {"passed": True, "command": "pytest"},
+            },
+        ],
+        confidence=0.9,
+        next_state_hint="testing",
+    )
+    EventService(db).save_agent_result(
+        run.task_id,
+        "Reviewer",
+        AgentResult(
+            agent_name="Reviewer",
+            summary=result.summary,
+            confidence=result.confidence,
+            next_state_hint=result.next_state_hint,
+        ),
+        task_contract=task,
+        result_contract=result,
+    )
+    monkeypatch.setenv("SACM_EVIDENCE_HMAC_KEY", "test-key")
+
+    EvidenceService(db, root=str(tmp_path)).build(run.id)
+    directory = tmp_path / run.id
+
+    assert (directory / "patch.diff").read_text() == "diff --git a/a.py b/a.py\n"
+    assert (directory / "review-report.json").exists()
+    assert (directory / "verification-results.json").exists()
+    assert not (directory / "sbom.spdx.json").exists()
+    assert (directory / "provenance.intoto.jsonl").exists()
+    assert (directory / "signature.sig").exists()
+
+
+def test_evidence_pack_ingests_verified_external_ci_artifact(db, tmp_path):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    junit = repository / "junit.xml"
+    junit.write_text("<testsuites/>")
+    run = RunService(db).create(
+        RunCreate(
+            title="Test artifact",
+            description="Collect JUnit.",
+            target_repo_path=str(repository),
+        )
+    )
+
+    EvidenceService(db, root=str(tmp_path / "evidence")).ingest_artifact(
+        run.id, "test_results_junit", str(junit)
+    )
+    EvidenceService(db, root=str(tmp_path / "evidence")).build(run.id)
+
+    assert (tmp_path / "evidence" / run.id / "test-results.xml").read_text() == (
+        "<testsuites/>"
+    )
+
+
+def test_local_workflow_persists_a_verified_completed_run(db, monkeypatch):
+    class FakeOrchestrator:
+        def __init__(self, _db):
+            pass
+
+        def run_task(self, task_id, **kwargs):
+            return {"task_id": task_id, "status": "done", "steps": 1}
+
+    monkeypatch.setattr("sacm.core.local_workflow.Orchestrator", FakeOrchestrator)
+    run = _create_run(db)
+
+    result = LocalWorkflow(db).execute(run.id)
+
+    assert result["status"] == "COMPLETED"
+    assert RunService(db).list_steps(run.id)[0].status == "COMPLETED"
+
+
+def test_local_workflow_reuses_failed_step_on_resume(db, monkeypatch):
+    class FailingOrchestrator:
+        calls = 0
+
+        def __init__(self, _db):
+            pass
+
+        def run_task(self, task_id, **kwargs):
+            self.__class__.calls += 1
+            if self.__class__.calls == 1:
+                raise RuntimeError("temporary failure")
+            return {"task_id": task_id, "status": "done", "steps": 1}
+
+    monkeypatch.setattr("sacm.core.local_workflow.Orchestrator", FailingOrchestrator)
+    run = _create_run(db)
+    workflow = LocalWorkflow(db)
+
+    assert workflow.execute(run.id)["status"] == "FAILED"
+    assert workflow.execute(run.id)["status"] == "COMPLETED"
+    assert len(RunService(db).list_steps(run.id)) == 1
+
+
+def test_versioned_contracts_validate_required_fields():
+    task = AgentTaskV1(
+        run_id="run-1",
+        step_id="step-1",
+        role="coder",
+        objective="Fix the test",
+        token_budget=100,
+        timeout_seconds=60,
+    )
+    result = AgentResultV1(
+        run_id="run-1",
+        step_id="step-1",
+        status="COMPLETED",
+        summary="Fixed",
+    )
+
+    assert task.schema_version == "agent-task/v1"
+    assert result.schema_version == "agent-result/v1"
+
+
+def test_agent_runs_through_versioned_contract_and_preserves_usage():
+    from sacm.agents.base import Agent
+
+    class LegacyAgent(Agent):
+        name = "Legacy"
+        role = "coding"
+
+        def run(self, context: AgentContext) -> AgentResult:
+            assert context.task_id == "task-1"
+            return AgentResult(
+                agent_name=self.name,
+                summary="Implemented the requested change.",
+                artifacts=[
+                    {
+                        "type": "usage",
+                        "provider": "openai",
+                        "model": "gpt-test",
+                        "input_tokens": 12,
+                        "output_tokens": 8,
+                    }
+                ],
+                confidence=0.9,
+                next_state_hint="testing",
+            )
+
+    task = AgentTaskV1(
+        run_id="run-1",
+        step_id="step-1",
+        role="coder",
+        objective="Implement the requested change.",
+        token_budget=100,
+        timeout_seconds=60,
+        execution_context={"task_id": "task-1"},
+    )
+
+    result = LegacyAgent().run_v1(task)
+
+    assert result.run_id == task.run_id
+    assert result.status == "COMPLETED"
+    assert result.usage[0].input_tokens == 12
+    assert LegacyAgent().result_from_v1(result).artifacts[0]["type"] == "usage"
+
+
+def test_agent_events_persist_versioned_task_and_result_contracts(db):
+    run = _create_run(db)
+    task = AgentTaskV1(
+        run_id=run.id,
+        step_id="step-1",
+        role="reviewer",
+        objective="Review the change.",
+        token_budget=100,
+        timeout_seconds=60,
+    )
+    contract_result = AgentResultV1(
+        run_id=run.id,
+        step_id="step-1",
+        status="COMPLETED",
+        summary="Review completed.",
+        confidence=0.8,
+        next_state_hint="testing",
+    )
+    legacy_result = AgentResult(
+        agent_name="Reviewer",
+        summary=contract_result.summary,
+        confidence=contract_result.confidence,
+        next_state_hint=contract_result.next_state_hint,
+    )
+
+    EventService(db).save_agent_result(
+        run.task_id,
+        "Reviewer",
+        legacy_result,
+        task_contract=task,
+        result_contract=contract_result,
+    )
+
+    payload = EventService(db).get_recent_events(run.task_id)[0].payload
+    assert payload["agent_task_contract"]["schema_version"] == "agent-task/v1"
+    assert payload["agent_result_contract"]["schema_version"] == "agent-result/v1"
+
+
+def test_workspace_uses_restricted_docker_configuration(monkeypatch):
+    command = {}
+
+    class Completed:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    def fake_run(args, **kwargs):
+        command["args"] = args
+        return Completed()
+
+    monkeypatch.setattr("sacm.core.workspace.subprocess.run", fake_run)
+    workspace = WorkspaceRef(
+        run_id="run-1",
+        repository_path="/repo",
+        path="/workspace",
+        branch_name="sacm/run-1/workspace",
+    )
+
+    result = WorkspaceManager().execute(workspace, "python:3.12", ["pytest"])
+
+    assert result["returncode"] == 0
+    assert "--network" in command["args"]
+    assert command["args"][command["args"].index("--network") + 1] == "none"
+    assert "--read-only" in command["args"]
+    assert "--cap-drop" in command["args"]
+    assert "--pids-limit" in command["args"]
+
+
+def test_workspace_can_use_gvisor_runtime(monkeypatch):
+    command = {}
+
+    class Completed:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    def fake_run(args, **kwargs):
+        command["args"] = args
+        return Completed()
+
+    monkeypatch.setattr("sacm.core.workspace.subprocess.run", fake_run)
+    monkeypatch.setenv("SACM_DOCKER_RUNTIME", "runsc")
+    workspace = WorkspaceRef(
+        run_id="run-1",
+        repository_path="/repo",
+        path="/workspace",
+        branch_name="sacm/run-1/workspace",
+    )
+
+    WorkspaceManager().execute(workspace, "python:3.12", ["pytest"])
+
+    assert command["args"][command["args"].index("--runtime") + 1] == "runsc"

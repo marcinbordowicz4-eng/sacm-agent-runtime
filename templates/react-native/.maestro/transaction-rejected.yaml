@@ -1,0 +1,7 @@
+appId: ${APP_ID}
+---
+- launchApp
+- tapOn:
+    id: "submit-transaction"
+- assertVisible:
+    id: "transaction-rejected"

@@ -1,0 +1,8 @@
+[
+  {
+    "id": "replace-me-1",
+    "title": "Replace with a verified repository task",
+    "description": "Use a small, deterministic change with explicit acceptance criteria.",
+    "target_repo_path": "/absolute/path/to/target-repository"
+  }
+]

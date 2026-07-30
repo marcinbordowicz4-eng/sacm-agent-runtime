@@ -266,8 +266,8 @@ def apply_feedback(
     belief = torch.ones(7) / 7.0
 
     router.update(
-        context_vector=ctx_vec,
-        belief_state=belief,
+        context_vector=ctx_vec.tolist(),
+        belief_state=belief.tolist(),
         selected_agent_index=best_agent_idx,
         advantage=run.advantage,
     )
@@ -470,6 +470,7 @@ def run_coordinator(
 
     # ── Phase 2: czekaj na build (lub użyj podanego IPA) ─────────────────
     log("Coordinator", f"{B}Phase 2 — Oczekiwanie na EAS build…{R}", Y)
+    ipa: str | None
     if ipa_path and Path(ipa_path).exists():
         log("Monitor", f"IPA podane bezpośrednio: {ipa_path}", G)
         ipa = ipa_path

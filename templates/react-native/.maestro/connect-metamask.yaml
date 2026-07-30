@@ -1,0 +1,7 @@
+appId: ${APP_ID}
+---
+- launchApp
+- tapOn:
+    id: "wallet-connect-metamask"
+- assertVisible:
+    id: "wallet-connected"

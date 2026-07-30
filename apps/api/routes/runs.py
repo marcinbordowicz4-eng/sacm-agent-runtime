@@ -1,0 +1,258 @@
+from fastapi import APIRouter, Depends, Header, HTTPException
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from sacm.core.auth_service import (
+    actor_from_request,
+    production_mode,
+    require_authenticated_actor,
+)
+from sacm.core.evidence_service import EvidenceService
+from sacm.core.run_service import RunService
+from sacm.core.tenancy_service import AuthorizationError, Role, TenancyService
+from sacm.core.workflow_backend import workflow_backend
+from sacm.infrastructure.db.models import EvidencePack, Membership, Project, Run
+from sacm.infrastructure.db.session import get_db
+from sacm.schemas.run import RunCreate, RunRead, RunStepRead
+
+router = APIRouter()
+
+
+class EvidenceArtifactIngest(BaseModel):
+    artifact_type: str
+    source_path: str
+
+
+def _run_or_404(service: RunService, run_id: str):
+    run = service.get(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return run
+
+
+def _authorize_run(
+    db: Session, run_id: str, actor: str, minimum_role: Role = "developer"
+):
+    run = _run_or_404(RunService(db), run_id)
+    if run.project_id is None:
+        if production_mode():
+            raise HTTPException(
+                status_code=403,
+                detail="Production runs must belong to a project.",
+            )
+        return run
+    try:
+        TenancyService(db).require_project_role(run.project_id, actor, minimum_role)
+    except AuthorizationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return run
+
+
+@router.post("", response_model=RunRead, status_code=201)
+def create_run(
+    payload: RunCreate,
+    actor_id: str | None = Header(default=None, alias="X-SACM-Actor"),
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> RunRead:
+    if production_mode() and not payload.project_id:
+        raise HTTPException(
+            status_code=422,
+            detail="project_id is required for production runs.",
+        )
+    if payload.project_id:
+        try:
+            authenticated_actor = actor_from_request(authorization, actor_id)
+            project = TenancyService(db).require_project_role(
+                payload.project_id, authenticated_actor, "developer"
+            )
+        except (PermissionError, RuntimeError) as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        except AuthorizationError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if project.repository_path:
+            if payload.target_repo_path and payload.target_repo_path != project.repository_path:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Run repository path must match its project repository.",
+                )
+            payload.target_repo_path = project.repository_path
+    return RunRead.model_validate(RunService(db).create(payload))
+
+
+@router.get("", response_model=list[RunRead])
+def list_runs(
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> list[RunRead]:
+    if production_mode():
+        runs = (
+            db.query(Run)
+            .join(Run.project)
+            .join(Project.organization)
+            .join(Membership)
+            .filter(Membership.actor_id == actor)
+            .all()
+        )
+    else:
+        runs = db.query(Run).all()
+    return [RunRead.model_validate(run) for run in runs]
+
+
+@router.get("/{run_id}", response_model=RunRead)
+def get_run(
+    run_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> RunRead:
+    return RunRead.model_validate(_authorize_run(db, run_id, actor))
+
+
+@router.get("/{run_id}/steps", response_model=list[RunStepRead])
+def list_steps(
+    run_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> list[RunStepRead]:
+    service = RunService(db)
+    _authorize_run(db, run_id, actor)
+    return [RunStepRead.model_validate(step) for step in service.list_steps(run_id)]
+
+
+@router.get("/{run_id}/events")
+def list_events(
+    run_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    service = RunService(db)
+    _authorize_run(db, run_id, actor)
+    return [
+        {
+            "id": event.id,
+            "sequence": event.sequence,
+            "event_type": event.event_type,
+            "actor": event.actor,
+            "payload": event.payload,
+            "event_hash": event.event_hash,
+            "previous_event_hash": event.previous_event_hash,
+            "occurred_at": event.occurred_at,
+        }
+        for event in service.events(run_id)
+    ]
+
+
+@router.post("/{run_id}/execute")
+def execute_run(
+    run_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> dict:
+    _authorize_run(db, run_id, actor)
+    try:
+        return workflow_backend(db).execute(run_id)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/{run_id}/cancel", response_model=RunRead)
+def cancel_run(
+    run_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> RunRead:
+    try:
+        _authorize_run(db, run_id, actor)
+        return RunRead.model_validate(RunService(db).cancel(run_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/{run_id}/resume", response_model=RunRead)
+def resume_run(
+    run_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> RunRead:
+    try:
+        _authorize_run(db, run_id, actor)
+        return RunRead.model_validate(RunService(db).resume(run_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/{run_id}/steps/{step_id}/retry", response_model=RunStepRead)
+def retry_step(
+    run_id: str,
+    step_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> RunStepRead:
+    try:
+        _authorize_run(db, run_id, actor)
+        return RunStepRead.model_validate(RunService(db).retry_step(run_id, step_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/{run_id}/evidence")
+def build_evidence(
+    run_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> dict:
+    _authorize_run(db, run_id, actor)
+    try:
+        evidence = EvidenceService(db).build(run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "id": evidence.id,
+        "path": evidence.path,
+        "manifest_hash": evidence.manifest_hash,
+    }
+
+
+@router.post("/{run_id}/evidence/artifacts", status_code=201)
+def ingest_evidence_artifact(
+    run_id: str,
+    payload: EvidenceArtifactIngest,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        _authorize_run(db, run_id, actor)
+        artifact = EvidenceService(db).ingest_artifact(
+            run_id, payload.artifact_type, payload.source_path
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "id": artifact.id,
+        "artifact_type": artifact.artifact_type,
+        "path": artifact.path,
+        "content_hash": artifact.content_hash,
+    }
+
+
+@router.get("/{run_id}/evidence")
+def list_evidence(
+    run_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    _authorize_run(db, run_id, actor)
+    packs = db.query(EvidencePack).filter(EvidencePack.run_id == run_id).all()
+    return [
+        {
+            "id": pack.id,
+            "path": pack.path,
+            "manifest_hash": pack.manifest_hash,
+            "created_at": pack.created_at,
+        }
+        for pack in packs
+    ]

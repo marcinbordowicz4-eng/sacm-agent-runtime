@@ -4,6 +4,20 @@ import pytest
 from sacm import mcp_server
 
 
+def test_request_headers_use_local_actor_by_default(monkeypatch):
+    monkeypatch.delenv("SACM_API_TOKEN", raising=False)
+    monkeypatch.delenv("SACM_ACTOR_ID", raising=False)
+
+    assert mcp_server._request_headers() == {"X-SACM-Actor": "copilot-cli"}
+
+
+def test_request_headers_use_api_token_when_configured(monkeypatch):
+    monkeypatch.setenv("SACM_ACTOR_ID", "local-user")
+    monkeypatch.setenv("SACM_API_TOKEN", "test-token")
+
+    assert mcp_server._request_headers() == {"Authorization": "Bearer test-token"}
+
+
 def test_advise_creates_task_and_compiles_context(monkeypatch):
     calls = []
 

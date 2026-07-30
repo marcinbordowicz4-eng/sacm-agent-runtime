@@ -1,0 +1,9 @@
+appId: ${APP_ID}
+---
+- launchApp
+- tapOn:
+    id: "network-wrong"
+- tapOn:
+    id: "submit-transaction"
+- assertVisible:
+    id: "wrong-network-recovery"
