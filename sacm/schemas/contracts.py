@@ -2,6 +2,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+AgentRole = Literal["reasoner", "coder", "reviewer", "tester", "security"]
+
 
 class ArtifactReference(BaseModel):
     artifact_type: str
@@ -22,7 +24,7 @@ class AgentTaskV1(BaseModel):
     schema_version: Literal["agent-task/v1"] = "agent-task/v1"
     run_id: str
     step_id: str
-    role: Literal["reasoner", "coder", "reviewer", "tester", "security"]
+    role: AgentRole
     objective: str = Field(min_length=1)
     acceptance_criteria: list[str] = Field(default_factory=list)
     context_references: list[str] = Field(default_factory=list)
@@ -52,3 +54,23 @@ class AgentResultV1(BaseModel):
     next_state_hint: str = ""
     memory_update: str | None = None
     skills_contributed: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ExternalAgentStepCreate(BaseModel):
+    framework: str = Field(min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9_.-]+$")
+    agent_name: str = Field(min_length=1, max_length=255)
+    idempotency_key: str = Field(min_length=1, max_length=255)
+    role: AgentRole
+    objective: str = Field(min_length=1)
+    acceptance_criteria: list[str] = Field(default_factory=list)
+    context_references: list[str] = Field(default_factory=list)
+    allowed_tools: list[str] = Field(default_factory=list)
+    denied_tools: list[str] = Field(default_factory=list)
+    token_budget: int = Field(gt=0)
+    cost_budget_usd: float | None = Field(default=None, ge=0)
+    timeout_seconds: int = Field(gt=0)
+    execution_context: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExternalAgentResultSubmit(BaseModel):
+    result: AgentResultV1

@@ -8,11 +8,16 @@ from sacm.core.auth_service import (
     require_authenticated_actor,
 )
 from sacm.core.evidence_service import EvidenceService
+from sacm.core.external_agent_service import ExternalAgentService
 from sacm.core.run_service import RunService
 from sacm.core.tenancy_service import AuthorizationError, Role, TenancyService
 from sacm.core.workflow_backend import workflow_backend
 from sacm.infrastructure.db.models import EvidencePack, Membership, Project, Run
 from sacm.infrastructure.db.session import get_db
+from sacm.schemas.contracts import (
+    ExternalAgentResultSubmit,
+    ExternalAgentStepCreate,
+)
 from sacm.schemas.run import RunCreate, RunRead, RunStepRead
 
 router = APIRouter()
@@ -121,6 +126,47 @@ def list_steps(
     service = RunService(db)
     _authorize_run(db, run_id, actor)
     return [RunStepRead.model_validate(step) for step in service.list_steps(run_id)]
+
+
+@router.post("/{run_id}/agent-steps", status_code=201)
+def create_external_agent_step(
+    run_id: str,
+    payload: ExternalAgentStepCreate,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> dict:
+    _authorize_run(db, run_id, actor)
+    try:
+        scheduled = ExternalAgentService(db).schedule(run_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "framework": scheduled.framework,
+        "agent_name": scheduled.agent_name,
+        "step": RunStepRead.model_validate(scheduled.step),
+        "task": scheduled.task,
+    }
+
+
+@router.post("/{run_id}/agent-steps/{step_id}/result")
+def submit_external_agent_result(
+    run_id: str,
+    step_id: str,
+    payload: ExternalAgentResultSubmit,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> dict:
+    _authorize_run(db, run_id, actor)
+    try:
+        submission = ExternalAgentService(db).submit(
+            run_id, step_id, payload.result
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "step": RunStepRead.model_validate(submission.step),
+        "approval_id": submission.approval_id,
+    }
 
 
 @router.get("/{run_id}/events")

@@ -76,6 +76,13 @@ class RunService:
             .all()
         )
 
+    def get_step(self, run_id: str, step_id: str) -> RunStep | None:
+        return (
+            self.db.query(RunStep)
+            .filter(RunStep.run_id == run_id, RunStep.id == step_id)
+            .first()
+        )
+
     def transition(
         self,
         run_id: str,
@@ -198,7 +205,7 @@ class RunService:
         step = self._require_step(run_id, step_id)
         if step.status == "COMPLETED":
             return step
-        if step.status not in {"PENDING", "RUNNING"}:
+        if step.status not in {"PENDING", "RUNNING", "AWAITING_APPROVAL"}:
             raise ValueError(f"Step {step_id} cannot complete from {step.status}")
         step.status = "COMPLETED"
         step.output = output
@@ -208,6 +215,30 @@ class RunService:
             event_type="StepCompleted",
             actor="system",
             payload={"name": step.name},
+            step_id=step.id,
+        )
+        self.db.commit()
+        self.db.refresh(step)
+        return step
+
+    def await_step_approval(
+        self, run_id: str, step_id: str, output: dict[str, Any]
+    ) -> RunStep:
+        run = self._require(run_id)
+        step = self._require_step(run_id, step_id)
+        if step.status == "AWAITING_APPROVAL":
+            return step
+        if step.status not in {"PENDING", "RUNNING"}:
+            raise ValueError(
+                f"Step {step_id} cannot await approval from {step.status}"
+            )
+        step.status = "AWAITING_APPROVAL"
+        step.output = output
+        self._append_event(
+            run,
+            event_type="StepAwaitingApproval",
+            actor="system",
+            payload={"name": step.name, "approval_id": output["sacm_approval_id"]},
             step_id=step.id,
         )
         self.db.commit()

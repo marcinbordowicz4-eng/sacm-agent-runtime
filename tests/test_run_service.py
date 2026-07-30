@@ -5,12 +5,17 @@ import pytest
 
 from sacm.core.event_service import EventService
 from sacm.core.evidence_service import EvidenceService
+from sacm.core.external_agent_service import ExternalAgentService
 from sacm.core.local_workflow import LocalWorkflow
 from sacm.core.run_service import RunService
 from sacm.core.workflow_backend import LocalWorkflowBackend, workflow_backend
 from sacm.core.workspace import WorkspaceManager, WorkspaceRef
 from sacm.schemas.context import AgentContext
-from sacm.schemas.contracts import AgentResultV1, AgentTaskV1
+from sacm.schemas.contracts import (
+    AgentResultV1,
+    AgentTaskV1,
+    ExternalAgentStepCreate,
+)
 from sacm.schemas.result import AgentResult
 from sacm.schemas.run import RunCreate
 
@@ -267,6 +272,162 @@ def test_versioned_contracts_validate_required_fields():
 
     assert task.schema_version == "agent-task/v1"
     assert result.schema_version == "agent-result/v1"
+
+
+def test_external_framework_step_persists_contract_usage_and_evidence(db):
+    run = _create_run(db)
+    service = ExternalAgentService(db)
+    scheduled = service.schedule(
+        run.id,
+        ExternalAgentStepCreate(
+            framework="langgraph",
+            agent_name="checkout-coder",
+            idempotency_key="langgraph:checkout-coder:1",
+            role="coder",
+            objective="Fix the checkout test.",
+            token_budget=1_000,
+            timeout_seconds=300,
+        ),
+    )
+
+    submission = service.submit(
+        run.id,
+        scheduled.step.id,
+        AgentResultV1(
+            run_id=run.id,
+            step_id=scheduled.step.id,
+            status="COMPLETED",
+            summary="Fixed the checkout test.",
+            evidence=[
+                {
+                    "artifact_type": "verification",
+                    "metadata": {"command": "pytest", "passed": True},
+                }
+            ],
+            usage=[
+                {
+                    "provider": "openai",
+                    "model": "gpt-test",
+                    "input_tokens": 12,
+                    "output_tokens": 8,
+                    "estimated_cost_usd": 0.01,
+                }
+            ],
+        ),
+    )
+
+    assert submission.step.status == "COMPLETED"
+    event = EventService(db).get_recent_events(run.task_id)[0]
+    assert event.payload["agent_name"] == "langgraph:checkout-coder"
+    assert event.payload["usage"][0]["input_tokens"] == 12
+    assert event.payload["agent_task_contract"]["run_id"] == run.id
+    assert event.payload["agent_result_contract"]["evidence"][0]["metadata"][
+        "passed"
+    ]
+    assert service.submit(
+        run.id,
+        scheduled.step.id,
+        AgentResultV1.model_validate(submission.step.output),
+    ).step.id == scheduled.step.id
+    assert len(EventService(db).get_recent_events(run.task_id)) == 1
+
+
+def test_external_framework_step_is_idempotent_and_rejects_payload_change(db):
+    run = _create_run(db)
+    service = ExternalAgentService(db)
+    payload = ExternalAgentStepCreate(
+        framework="openhands",
+        agent_name="coder",
+        idempotency_key="openhands:coder:1",
+        role="coder",
+        objective="Implement the change.",
+        token_budget=500,
+        timeout_seconds=120,
+    )
+
+    first = service.schedule(run.id, payload)
+    second = service.schedule(run.id, payload)
+
+    assert second.step.id == first.step.id
+    with pytest.raises(ValueError, match="idempotency key"):
+        service.schedule(
+            run.id,
+            payload.model_copy(update={"objective": "A different change."}),
+        )
+
+
+def test_external_framework_result_requires_matching_contract_identity(db):
+    run = _create_run(db)
+    scheduled = ExternalAgentService(db).schedule(
+        run.id,
+        ExternalAgentStepCreate(
+            framework="microsoft-agent-framework",
+            agent_name="reviewer",
+            idempotency_key="maf:reviewer:1",
+            role="reviewer",
+            objective="Review the patch.",
+            token_budget=500,
+            timeout_seconds=120,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="must match"):
+        ExternalAgentService(db).submit(
+            run.id,
+            scheduled.step.id,
+            AgentResultV1(
+                run_id="wrong-run",
+                step_id=scheduled.step.id,
+                status="COMPLETED",
+                summary="Reviewed.",
+            ),
+        )
+
+
+def test_external_framework_result_creates_and_honors_approval(db):
+    run = _create_run(db)
+    service = ExternalAgentService(db)
+    scheduled = service.schedule(
+        run.id,
+        ExternalAgentStepCreate(
+            framework="codex",
+            agent_name="delivery",
+            idempotency_key="codex:delivery:1",
+            role="coder",
+            objective="Prepare delivery.",
+            token_budget=500,
+            timeout_seconds=120,
+        ),
+    )
+    result = AgentResultV1(
+        run_id=run.id,
+        step_id=scheduled.step.id,
+        status="NEEDS_APPROVAL",
+        summary="Ready to push the branch.",
+        actions=[{"action": "git.push"}],
+    )
+
+    waiting = service.submit(run.id, scheduled.step.id, result)
+
+    assert waiting.step.status == "AWAITING_APPROVAL"
+    assert waiting.approval_id
+    with pytest.raises(ValueError, match="still pending"):
+        service.submit(run.id, scheduled.step.id, result)
+
+    from sacm.core.policy_service import PolicyService
+
+    PolicyService(db).decide(
+        waiting.approval_id, True, "maintainer", "Approved for delivery."
+    )
+    completed = service.submit(
+        run.id,
+        scheduled.step.id,
+        result.model_copy(update={"status": "COMPLETED"}),
+    )
+
+    assert completed.step.status == "COMPLETED"
+    assert completed.approval_id == waiting.approval_id
+    assert completed.step.output["sacm_approval_id"] == waiting.approval_id
 
 
 def test_agent_runs_through_versioned_contract_and_preserves_usage():

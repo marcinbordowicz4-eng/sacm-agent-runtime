@@ -147,6 +147,8 @@ Pass the repository path through the API or CLI when creating tasks.
 - `POST /github/pull-requests/{number}/merge`
 - `POST /v1/runs`
 - `GET /v1/runs/{run_id}`
+- `POST /v1/runs/{run_id}/agent-steps`
+- `POST /v1/runs/{run_id}/agent-steps/{step_id}/result`
 - `POST /v1/runs/{run_id}/execute`
 - `POST /v1/runs/{run_id}/cancel`
 - `POST /v1/runs/{run_id}/resume`
@@ -186,6 +188,15 @@ Install `pip install -e ".[agents]"`, set `SACM_OPENAI_AGENTS_ENABLED=true`,
 persists only returned usage counters and an optional configured cost estimate.
 Set the matching `SACM_OPENAI_AGENTS_{INPUT,OUTPUT}_COST_PER_MILLION_USD`
 variables before relying on cost totals.
+
+## External agent frameworks
+
+LangGraph, Microsoft Agent Framework, OpenHands, Codex, and other orchestrators
+can join a SACM run without an in-process adapter. Create an external agent step
+with `POST /v1/runs/{run_id}/agent-steps`, execute the returned `AgentTaskV1`,
+then submit its `AgentResultV1` to the step's `/result` endpoint. SACM validates
+run and step identity, persists reported usage and evidence, and creates a
+durable approval when the result status is `NEEDS_APPROVAL`.
 
 ## Delivery policy and GitHub webhook
 
