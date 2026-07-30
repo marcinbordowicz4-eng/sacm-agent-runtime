@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from sacm.core.auth_service import actor_from_request
+from sacm.core.auth_service import actor_from_request, production_mode
 from sacm.core.tenancy_service import AuthorizationError, TenancyService
 from sacm.infrastructure.db.models import Membership, Organization, Project
 from sacm.infrastructure.db.session import get_db
@@ -34,6 +34,19 @@ def _actor(actor_id: str | None, authorization: str | None) -> str:
         return actor_from_request(authorization, actor_id)
     except (PermissionError, RuntimeError) as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
+@router.get("")
+def list_organizations(
+    actor_id: str | None = Header(default=None, alias="X-SACM-Actor"),
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    actor = _actor(actor_id, authorization)
+    query = db.query(Organization)
+    if production_mode():
+        query = query.join(Membership).filter(Membership.actor_id == actor)
+    return [_organization(organization) for organization in query.order_by(Organization.name)]
 
 
 @router.post("", status_code=201)
