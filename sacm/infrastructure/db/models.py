@@ -39,12 +39,26 @@ def embedding_column() -> Any:
 
 class Task(Base):
     __tablename__ = "tasks"
+    __table_args__ = (
+        UniqueConstraint(
+            "connector_type",
+            "external_id",
+            name="uq_tasks_connector_external_id",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
     title: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String, default="pending")
     target_repo_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    contract_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    connector_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    external_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    external_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    task_contract: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    readiness_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    readiness_details: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
@@ -55,6 +69,31 @@ class Task(Base):
     agent_states: Mapped[list["AgentState"]] = relationship("AgentState", back_populates="task")
     artifacts: Mapped[list["Artifact"]] = relationship("Artifact", back_populates="task")
     runs: Mapped[list["Run"]] = relationship("Run", back_populates="task")
+    clarifications: Mapped[list["TaskClarification"]] = relationship(
+        "TaskClarification",
+        back_populates="task",
+        cascade="all, delete-orphan",
+    )
+
+
+class TaskClarification(Base):
+    __tablename__ = "task_clarifications"
+    __table_args__ = (
+        UniqueConstraint("task_id", "field_name", name="uq_task_clarification_field"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    task_id: Mapped[str] = mapped_column(
+        ForeignKey("tasks.id"), nullable=False, index=True
+    )
+    field_name: Mapped[str] = mapped_column(String, nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="open")
+    answer: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    task: Mapped["Task"] = relationship("Task", back_populates="clarifications")
 
 
 class Organization(Base):

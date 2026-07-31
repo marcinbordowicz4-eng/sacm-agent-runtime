@@ -9,6 +9,7 @@ from apps.api.routes import (
     approvals,
     context,
     github,
+    intake,
     memory,
     organizations,
     repository,
@@ -78,6 +79,12 @@ app.include_router(
     dependencies=legacy_dependencies,
 )
 app.include_router(github.router, prefix="/github", tags=["github"])
+app.include_router(
+    intake.router,
+    prefix="/v1/intake",
+    tags=["intake"],
+    dependencies=authenticated_dependencies,
+)
 app.include_router(
     runs.router, prefix="/v1/runs", tags=["runs"], dependencies=authenticated_dependencies
 )

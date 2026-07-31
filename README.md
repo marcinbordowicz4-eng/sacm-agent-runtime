@@ -49,6 +49,16 @@ while SACM's legacy context and result models are retained only as a migration
 adapter for existing agents. Contract results carry artifact references,
 verification evidence, provider-reported usage, decisions, and failure details.
 
+### Governed task intake
+
+Issue trackers submit a connector-neutral `TaskContractV1` to
+`POST /v1/intake/tasks`. SACM persists the source identity, prevents duplicate
+tasks, calculates a deterministic Definition of Ready score, and creates
+durable clarification questions for missing descriptions, acceptance criteria,
+repository references, or ownership. Jira webhooks can use
+`POST /v1/intake/jira/webhooks`; plain text and Atlassian Document Format
+descriptions are normalized into the same contract.
+
 ## Quick start
 
 ```bash
