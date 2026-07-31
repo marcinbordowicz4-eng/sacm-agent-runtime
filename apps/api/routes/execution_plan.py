@@ -38,6 +38,7 @@ def build_execution_plan(
         return ExecutionPlanningService(db).build(
             task_id,
             policy_pack=(payload or ExecutionPlanBuildRequest()).policy_pack,
+            actor_id=actor,
         )
     except ExecutionPlanningNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

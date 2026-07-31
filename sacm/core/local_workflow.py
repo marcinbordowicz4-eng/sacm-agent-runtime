@@ -61,14 +61,14 @@ class LocalWorkflow:
             self.runs.transition(run_id, "REVIEWING", "WorkflowReviewing", step_id=step.id)
             self.runs.transition(run_id, "TESTING", "WorkflowTesting", step_id=step.id)
             self.runs.transition(run_id, "DELIVERING", "WorkflowDelivering", step_id=step.id)
-            EvidenceService(self.db).build(run_id)
+            EvidenceService(self.db).build(run_id, trusted_internal=True)
             completed = self.runs.transition(
                 run_id,
                 "COMPLETED",
                 "RunCompleted",
                 step_id=step.id,
             )
-            EvidenceService(self.db).build(run_id)
+            EvidenceService(self.db).build(run_id, trusted_internal=True)
             return {"run_id": run_id, "status": completed.status, "output": output}
         except Exception as exc:
             self.runs.fail_step(

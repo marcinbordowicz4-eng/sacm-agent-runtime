@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from sacm.core.event_service import EventService
 from sacm.core.memory_service import MemoryService
 from sacm.core.task_service import TaskService
+from sacm.core.tenancy_service import ResourceAuthorizationService, TenancyService
 
 
 class TaskContextError(ValueError):
@@ -26,11 +27,14 @@ class RepositoryAuditService:
         details: dict[str, Any],
         *,
         memory_summary: str | None = None,
+        actor_id: str | None = None,
+        permission: str = "tasks.write",
     ) -> None:
         if task_id is None:
             return
         if TaskService(self.db).get(task_id) is None:
             raise TaskContextError(f"Task {task_id} not found.")
+        task = self.authorize(task_id, repository_path, actor_id, permission)
         EventService(self.db).save(
             task_id=task_id,
             event_type=f"repository_{operation}",
@@ -46,10 +50,39 @@ class RepositoryAuditService:
                 content=memory_summary,
                 source_type="repository_operation",
                 importance=0.8,
+                actor_id=actor_id,
             )
         from sacm.core.traceability_service import TraceabilityService
 
         TraceabilityService(self.db).refresh(task_id)
+        context = ResourceAuthorizationService(self.db).task_context(task)
+        if context and actor_id:
+            TenancyService(self.db).audit_sensitive(
+                context.organization_id,
+                context.project_id,
+                actor_id,
+                f"repository.{operation}",
+                "task",
+                task_id,
+                "Repository operation recorded.",
+                {"repository_path": repository_path},
+            )
+
+    def authorize(
+        self,
+        task_id: str | None,
+        repository_path: str,
+        actor_id: str | None,
+        permission: str,
+    ):
+        resources = ResourceAuthorizationService(self.db)
+        if actor_id is None:
+            if resources._production():
+                raise PermissionError("Authenticated tenant context is required.")
+            return TaskService(self.db).get(task_id) if task_id else None
+        return resources.require_repository(
+            task_id, repository_path, actor_id, permission
+        )
 
     @staticmethod
     def content_summary(content: str) -> dict[str, Any]:

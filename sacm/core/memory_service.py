@@ -4,7 +4,8 @@ from typing import Any, Optional
 
 from sqlalchemy.orm import Session
 
-from sacm.infrastructure.db.models import MemoryChunk
+from sacm.core.tenancy_service import ResourceAuthorizationService
+from sacm.infrastructure.db.models import MemoryChunk, Task
 from sacm.ml.embeddings import EmbeddingService
 
 
@@ -19,11 +20,26 @@ class MemoryService:
         content: str,
         source_type: str = "manual",
         importance: float = 0.5,
+        actor_id: str | None = None,
     ) -> MemoryChunk:
+        task = self._authorize(task_id, actor_id, "tasks.write")
+        context = ResourceAuthorizationService(self.db).task_context(task)
         embedding = self.embedding_service.embed(content)
         chunk = MemoryChunk(
             id=str(uuid.uuid4()),
             task_id=task_id,
+            organization_id=context.organization_id if context else None,
+            project_id=context.project_id if context else None,
+            tenant_attribution=(
+                {
+                    "schema_version": "tenant-attribution/v1",
+                    "source": context.source,
+                }
+                if context
+                else None
+            ),
+            data_region=task.data_region,
+            data_classification=task.data_classification,
             source_type=source_type,
             content=content,
             embedding=embedding,
@@ -35,7 +51,14 @@ class MemoryService:
         self.db.refresh(chunk)
         return chunk
 
-    def search(self, task_id: str, query: str, top_k: int = 8) -> list[MemoryChunk]:
+    def search(
+        self,
+        task_id: str,
+        query: str,
+        top_k: int = 8,
+        actor_id: str | None = None,
+    ) -> list[MemoryChunk]:
+        self._authorize(task_id, actor_id, "tasks.read")
         if top_k < 1:
             return []
 
@@ -60,3 +83,11 @@ class MemoryService:
     def add_from_agent_result(self, task_id: str, result: Any) -> None:
         if result.memory_update:
             self.add(task_id, result.memory_update, source_type="agent", importance=0.7)
+
+    def _authorize(self, task_id: str, actor_id: str | None, permission: str):
+        resources = ResourceAuthorizationService(self.db)
+        if actor_id is not None:
+            return resources.require_task(task_id, actor_id, permission)
+        if resources._production():
+            raise PermissionError("Authenticated tenant context is required.")
+        return self.db.get(Task, task_id)

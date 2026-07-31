@@ -340,6 +340,11 @@ class ApplicationContextService:
         self.db.add(
             ContextEvent(
                 task_id=task.id,
+                organization_id=task.organization_id,
+                project_id=task.project_id,
+                tenant_attribution=task.tenant_attribution,
+                data_region=task.data_region,
+                data_classification=task.data_classification,
                 event_type="application_context_built",
                 payload={
                     "application_context_id": context.id,

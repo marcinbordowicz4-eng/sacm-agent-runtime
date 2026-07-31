@@ -1,12 +1,22 @@
 import hashlib
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 
-from sacm.infrastructure.db.models import EvidencePack, Run, RunStep, RuntimeEvent, Task
+from sacm.infrastructure.db.models import (
+    EvidencePack,
+    ExecutionJob,
+    Project,
+    Run,
+    RunStep,
+    RuntimeEvent,
+    Task,
+)
 from sacm.schemas.run import RunCreate
 
 _ALLOWED_TRANSITIONS = {
@@ -35,8 +45,23 @@ class RunService:
         self.db = db
 
     def create(self, payload: RunCreate) -> Run:
+        project = (
+            self.db.get(Project, payload.project_id)
+            if payload.project_id and not payload.project_id.startswith("legacy:")
+            else None
+        )
+        attribution = (
+            {"schema_version": "tenant-attribution/v1", "source": "run.create"}
+            if project
+            else None
+        )
         task = Task(
             id=str(uuid.uuid4()),
+            organization_id=project.organization_id if project else None,
+            project_id=project.id if project else None,
+            tenant_attribution=attribution,
+            data_region=project.data_region if project else None,
+            data_classification=project.data_classification if project else None,
             title=payload.title,
             description=payload.description,
             target_repo_path=payload.target_repo_path,
@@ -44,6 +69,10 @@ class RunService:
         )
         run = Run(
             id=str(uuid.uuid4()),
+            organization_id=project.organization_id if project else None,
+            tenant_attribution=attribution,
+            data_region=project.data_region if project else None,
+            data_classification=project.data_classification if project else None,
             task=task,
             status="CREATED",
             source_revision=payload.source_revision,
@@ -139,6 +168,17 @@ class RunService:
             raise ValueError(
                 "A run cannot complete while steps remain incomplete: "
                 + ", ".join(incomplete_steps)
+            )
+        from sacm.core.supply_chain_service import SupplyChainService
+
+        completeness = SupplyChainService(self.db).refresh_completeness(run.id)
+        if (
+            os.getenv("SACM_ENVIRONMENT", "development").lower() == "production"
+            and completeness.missing_types
+        ):
+            raise ValueError(
+                "A production run cannot complete without mandatory supply-chain "
+                "evidence: " + ", ".join(completeness.missing_types)
             )
 
     def add_step(
@@ -274,6 +314,30 @@ class RunService:
         run = self._require(run_id)
         if run.status in {"COMPLETED", "CANCELLED"}:
             raise ValueError(f"Run {run_id} cannot be cancelled from {run.status}")
+        if "execution_jobs" in inspect(self.db.connection()).get_table_names():
+            now = _utcnow()
+            jobs = (
+                self.db.query(ExecutionJob)
+                .filter(
+                    ExecutionJob.run_id == run_id,
+                    ExecutionJob.state.in_(("QUEUED", "LEASED", "RUNNING")),
+                )
+                .all()
+            )
+            from sacm.core.credential_lease_service import CredentialLeaseService
+
+            credential_leases = CredentialLeaseService(self.db)
+            for job in jobs:
+                job.state = "CANCELLED"
+                job.cancelled_at = now
+                job.lease_owner_id = None
+                job.lease_token_hash = None
+                job.lease_expires_at = None
+                job.lease_heartbeat_at = None
+                job.updated_at = now
+                credential_leases.revoke_for_job(
+                    job.id, "user", "Execution run cancelled."
+                )
         run.cancellation_requested = True
         return self.transition(run_id, "CANCELLED", "RunCancelled", actor="user")
 
@@ -377,6 +441,8 @@ class RunService:
             actor=actor,
             correlation_id=run.id,
             payload=payload,
+            data_region=run.data_region,
+            data_classification=run.data_classification,
             previous_event_hash=previous_hash,
             event_hash=event_hash,
             occurred_at=occurred_at,

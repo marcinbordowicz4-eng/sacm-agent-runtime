@@ -35,6 +35,7 @@ dependencies = [
     "rich>=13.0.0",
     "pyyaml>=6.0",
     "numpy>=1.26.0,<2",
+    "cryptography>=42.0.0",
 ]
 
 [project.optional-dependencies]
@@ -52,6 +53,14 @@ github-app = [
 ]
 auth = [
     "PyJWT[crypto]>=2.8.0",
+    "cryptography>=42.0.0",
+]
+secrets-aws = [
+    "boto3>=1.34.0",
+]
+secrets-azure = [
+    "azure-identity>=1.17.0",
+    "azure-keyvault-secrets>=4.8.0",
 ]
 dev = [
     "pytest>=8.0.0",
@@ -68,6 +77,7 @@ sacm = "cli.main:app"
 sacm-mcp = "sacm.mcp_server:main"
 sacm-temporal-worker = "sacm.workflows.temporal_worker:main"
 sacm-migrate = "sacm.migrate:main"
+sacm-customer-executor = "sacm.customer_executor.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["apps", "cli", "sacm"]

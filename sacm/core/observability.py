@@ -92,6 +92,61 @@ class OpenTelemetryService:
             unit="{execution}",
             description="SACM tool execution count.",
         )
+        self.queue_depth = meter.create_histogram(
+            "sacm.execution.queue.depth",
+            unit="{job}",
+            description="Observed execution queue depth.",
+        )
+        self.queue_age = meter.create_histogram(
+            "sacm.execution.queue.oldest_age",
+            unit="s",
+            description="Age of the oldest queued execution job.",
+        )
+        self.lease_recoveries = meter.create_counter(
+            "sacm.execution.lease.recoveries",
+            unit="{job}",
+            description="Recovered expired or orphaned execution leases.",
+        )
+        self.executor_capacity = meter.create_histogram(
+            "sacm.executor.active",
+            unit="{executor}",
+            description="Observed active executor capacity.",
+        )
+        self.backup_operations = meter.create_counter(
+            "sacm.backup.operations",
+            unit="{operation}",
+            description="Logical backup operation outcomes.",
+        )
+        self.backup_freshness = meter.create_histogram(
+            "sacm.backup.freshness",
+            unit="s",
+            description="Age of the latest completed logical backup.",
+        )
+        self.dr_duration = meter.create_histogram(
+            "sacm.dr.restore.duration",
+            unit="s",
+            description="Measured disaster-recovery restore duration.",
+        )
+        self.slo_evaluations = meter.create_counter(
+            "sacm.slo.evaluations",
+            unit="{evaluation}",
+            description="SLO evaluation outcomes.",
+        )
+        self.governance_backlog = meter.create_histogram(
+            "sacm.governance.request.backlog",
+            unit="{request}",
+            description="Open enterprise governance request backlog.",
+        )
+        self.audit_delivery_backlog = meter.create_histogram(
+            "sacm.audit.delivery.backlog",
+            unit="{delivery}",
+            description="Pending SIEM audit delivery backlog.",
+        )
+        self.audit_delivery_dead_letters = meter.create_histogram(
+            "sacm.audit.delivery.dead_letters",
+            unit="{delivery}",
+            description="SIEM audit deliveries in dead letter.",
+        )
 
     @classmethod
     def _configure(cls) -> None:
@@ -175,6 +230,41 @@ class OpenTelemetryService:
         current_span.set_attribute("sacm.tool.returncode", returncode)
         self.tool_duration.record(duration_ms, attributes)
         self.tool_counter.add(1, attributes)
+
+    def record_resilience_event(
+        self,
+        name: str,
+        value: float = 1,
+        attributes: dict[str, str | int | bool] | None = None,
+    ) -> None:
+        if not self.enabled:
+            return
+        attributes = attributes or {}
+        instruments = {
+            "queue_depth": self.queue_depth,
+            "queue_age": self.queue_age,
+            "lease_recovery": self.lease_recoveries,
+            "executor_capacity": self.executor_capacity,
+            "backup_operation": self.backup_operations,
+            "backup_freshness": self.backup_freshness,
+            "dr_duration": self.dr_duration,
+            "slo_evaluation": self.slo_evaluations,
+            "governance_backlog": self.governance_backlog,
+            "audit_delivery_backlog": self.audit_delivery_backlog,
+            "audit_delivery_dead_letters": self.audit_delivery_dead_letters,
+        }
+        instrument = instruments.get(name)
+        if instrument is None:
+            raise ValueError(f"Unknown resilience metric {name}.")
+        typed_instrument: Any = instrument
+        if name in {
+            "lease_recovery",
+            "backup_operation",
+            "slo_evaluation",
+        }:
+            typed_instrument.add(value, attributes)
+        else:
+            typed_instrument.record(value, attributes)
 
 
 @dataclass

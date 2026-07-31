@@ -1,9 +1,8 @@
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from sacm.core.auth_service import (
-    actor_from_request,
     production_mode,
     require_authenticated_actor,
 )
@@ -12,9 +11,13 @@ from sacm.core.external_agent_service import ExternalAgentService
 from sacm.core.run_context_service import RunContextService
 from sacm.core.run_service import RunService
 from sacm.core.snapshot_service import SnapshotService
-from sacm.core.tenancy_service import AuthorizationError, Role, TenancyService
+from sacm.core.tenancy_service import (
+    AuthorizationError,
+    ResourceAuthorizationService,
+    TenancyService,
+)
 from sacm.core.workflow_backend import workflow_backend
-from sacm.infrastructure.db.models import EvidencePack, Membership, Project, Run
+from sacm.infrastructure.db.models import EvidencePack
 from sacm.infrastructure.db.session import get_db
 from sacm.schemas.contracts import (
     ExternalAgentResultSubmit,
@@ -30,6 +33,7 @@ from sacm.schemas.snapshot import (
     SnapshotRestoreResultV1,
     SnapshotRestoreV1,
 )
+from sacm.schemas.supply_chain import VerificationResultV1
 
 router = APIRouter()
 
@@ -47,30 +51,24 @@ def _run_or_404(service: RunService, run_id: str):
 
 
 def _authorize_run(
-    db: Session, run_id: str, actor: str, minimum_role: Role = "developer"
+    db: Session, run_id: str, actor: str, permission: str | None = None
 ):
-    run = _run_or_404(RunService(db), run_id)
-    if run.project_id is None:
-        if production_mode():
-            raise HTTPException(
-                status_code=403,
-                detail="Production runs must belong to a project.",
-            )
-        return run
+    required_permission = permission or "runs.write"
     try:
-        TenancyService(db).require_project_role(run.project_id, actor, minimum_role)
+        return ResourceAuthorizationService(db).require_run(
+            run_id, actor, required_permission
+        )
     except AuthorizationError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
+        detail = str(exc) if permission is not None else "Insufficient organization role."
+        raise HTTPException(status_code=403, detail=detail) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return run
 
 
 @router.post("", response_model=RunRead, status_code=201)
 def create_run(
     payload: RunCreate,
-    actor_id: str | None = Header(default=None, alias="X-SACM-Actor"),
-    authorization: str | None = Header(default=None),
+    actor: str = Depends(require_authenticated_actor),
     db: Session = Depends(get_db),
 ) -> RunRead:
     if production_mode() and not payload.project_id:
@@ -80,12 +78,12 @@ def create_run(
         )
     if payload.project_id:
         try:
-            authenticated_actor = actor_from_request(authorization, actor_id)
-            project = TenancyService(db).require_project_role(
-                payload.project_id, authenticated_actor, "developer"
+            project = TenancyService(db).require_project_permission(
+                payload.project_id,
+                actor,
+                "runs.write",
+                resource_type="run",
             )
-        except (PermissionError, RuntimeError) as exc:
-            raise HTTPException(status_code=401, detail=str(exc)) from exc
         except AuthorizationError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         except ValueError as exc:
@@ -105,17 +103,7 @@ def list_runs(
     actor: str = Depends(require_authenticated_actor),
     db: Session = Depends(get_db),
 ) -> list[RunRead]:
-    if production_mode():
-        runs = (
-            db.query(Run)
-            .join(Run.project)
-            .join(Project.organization)
-            .join(Membership)
-            .filter(Membership.actor_id == actor)
-            .all()
-        )
-    else:
-        runs = db.query(Run).all()
+    runs = ResourceAuthorizationService(db).accessible_runs(actor)
     return [RunRead.model_validate(run) for run in runs]
 
 
@@ -125,7 +113,7 @@ def get_run(
     actor: str = Depends(require_authenticated_actor),
     db: Session = Depends(get_db),
 ) -> RunRead:
-    return RunRead.model_validate(_authorize_run(db, run_id, actor))
+    return RunRead.model_validate(_authorize_run(db, run_id, actor, "runs.read"))
 
 
 @router.get("/{run_id}/context")
@@ -134,7 +122,7 @@ def get_run_context(
     actor: str = Depends(require_authenticated_actor),
     db: Session = Depends(get_db),
 ) -> dict:
-    run = _authorize_run(db, run_id, actor)
+    run = _authorize_run(db, run_id, actor, "runs.read")
     return RunContextService(db).build(run)
 
 
@@ -145,7 +133,7 @@ def list_steps(
     db: Session = Depends(get_db),
 ) -> list[RunStepRead]:
     service = RunService(db)
-    _authorize_run(db, run_id, actor)
+    _authorize_run(db, run_id, actor, "runs.read")
     return [RunStepRead.model_validate(step) for step in service.list_steps(run_id)]
 
 
@@ -155,7 +143,7 @@ def list_snapshots(
     actor: str = Depends(require_authenticated_actor),
     db: Session = Depends(get_db),
 ) -> list[RunSnapshotV1]:
-    _authorize_run(db, run_id, actor)
+    _authorize_run(db, run_id, actor, "runs.read")
     return [
         RunSnapshotV1.model_validate(snapshot)
         for snapshot in SnapshotService(db).list_snapshots(run_id)
@@ -173,7 +161,7 @@ def create_snapshot(
     actor: str = Depends(require_authenticated_actor),
     db: Session = Depends(get_db),
 ) -> RunSnapshotV1:
-    _authorize_run(db, run_id, actor)
+    _authorize_run(db, run_id, actor, "runs.write")
     try:
         snapshot = SnapshotService(db).create(run_id, payload.reason)
         db.commit()
@@ -193,7 +181,7 @@ def get_snapshot(
     actor: str = Depends(require_authenticated_actor),
     db: Session = Depends(get_db),
 ) -> RunSnapshotV1:
-    _authorize_run(db, run_id, actor)
+    _authorize_run(db, run_id, actor, "runs.read")
     snapshot = SnapshotService(db).get(run_id, snapshot_id)
     if snapshot is None:
         raise HTTPException(status_code=404, detail="Snapshot not found")
@@ -210,7 +198,7 @@ def restore_snapshot(
     actor: str = Depends(require_authenticated_actor),
     db: Session = Depends(get_db),
 ) -> SnapshotRestoreResultV1:
-    _authorize_run(db, run_id, actor)
+    _authorize_run(db, run_id, actor, "runs.write")
     try:
         run, restored_step_ids = SnapshotService(db).restore(
             run_id, payload.snapshot_id, payload.reason
@@ -236,7 +224,7 @@ def replay_snapshot(
     actor: str = Depends(require_authenticated_actor),
     db: Session = Depends(get_db),
 ) -> ReplayCreatedV1:
-    _authorize_run(db, run_id, actor)
+    _authorize_run(db, run_id, actor, "runs.execute")
     try:
         replay = SnapshotService(db).replay(
             run_id,
@@ -266,7 +254,7 @@ def replay_comparison(
     actor: str = Depends(require_authenticated_actor),
     db: Session = Depends(get_db),
 ) -> ReplayComparisonV1:
-    _authorize_run(db, run_id, actor)
+    _authorize_run(db, run_id, actor, "runs.read")
     try:
         return ReplayComparisonV1.model_validate(
             SnapshotService(db).comparison(run_id)
@@ -282,9 +270,9 @@ def create_external_agent_step(
     actor: str = Depends(require_authenticated_actor),
     db: Session = Depends(get_db),
 ) -> dict:
-    _authorize_run(db, run_id, actor)
+    _authorize_run(db, run_id, actor, "runs.execute")
     try:
-        scheduled = ExternalAgentService(db).schedule(run_id, payload)
+        scheduled = ExternalAgentService(db).schedule(run_id, payload, actor)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {
@@ -303,10 +291,10 @@ def submit_external_agent_result(
     actor: str = Depends(require_authenticated_actor),
     db: Session = Depends(get_db),
 ) -> dict:
-    _authorize_run(db, run_id, actor)
+    _authorize_run(db, run_id, actor, "runs.execute")
     try:
         submission = ExternalAgentService(db).submit(
-            run_id, step_id, payload.result
+            run_id, step_id, payload.result, actor
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -323,7 +311,7 @@ def list_events(
     db: Session = Depends(get_db),
 ) -> list[dict]:
     service = RunService(db)
-    _authorize_run(db, run_id, actor)
+    _authorize_run(db, run_id, actor, "runs.execute")
     return [
         {
             "id": event.id,
@@ -345,7 +333,7 @@ def execute_run(
     actor: str = Depends(require_authenticated_actor),
     db: Session = Depends(get_db),
 ) -> dict:
-    _authorize_run(db, run_id, actor)
+    _authorize_run(db, run_id, actor, "runs.execute")
     try:
         return workflow_backend(db).execute(run_id)
     except (RuntimeError, ValueError) as exc:
@@ -359,7 +347,7 @@ def cancel_run(
     db: Session = Depends(get_db),
 ) -> RunRead:
     try:
-        _authorize_run(db, run_id, actor)
+        _authorize_run(db, run_id, actor, "runs.execute")
         return RunRead.model_validate(RunService(db).cancel(run_id))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -372,7 +360,7 @@ def resume_run(
     db: Session = Depends(get_db),
 ) -> RunRead:
     try:
-        _authorize_run(db, run_id, actor)
+        _authorize_run(db, run_id, actor, "runs.execute")
         return RunRead.model_validate(RunService(db).resume(run_id))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -386,7 +374,7 @@ def retry_step(
     db: Session = Depends(get_db),
 ) -> RunStepRead:
     try:
-        _authorize_run(db, run_id, actor)
+        _authorize_run(db, run_id, actor, "runs.execute")
         return RunStepRead.model_validate(RunService(db).retry_step(run_id, step_id))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -398,9 +386,9 @@ def build_evidence(
     actor: str = Depends(require_authenticated_actor),
     db: Session = Depends(get_db),
 ) -> dict:
-    _authorize_run(db, run_id, actor)
+    _authorize_run(db, run_id, actor, "evidence.build")
     try:
-        evidence = EvidenceService(db).build(run_id)
+        evidence = EvidenceService(db).build(run_id, actor)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {
@@ -418,9 +406,9 @@ def ingest_evidence_artifact(
     db: Session = Depends(get_db),
 ) -> dict:
     try:
-        _authorize_run(db, run_id, actor)
+        _authorize_run(db, run_id, actor, "evidence.build")
         artifact = EvidenceService(db).ingest_artifact(
-            run_id, payload.artifact_type, payload.source_path
+            run_id, payload.artifact_type, payload.source_path, actor
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -438,7 +426,7 @@ def list_evidence(
     actor: str = Depends(require_authenticated_actor),
     db: Session = Depends(get_db),
 ) -> list[dict]:
-    _authorize_run(db, run_id, actor)
+    _authorize_run(db, run_id, actor, "evidence.read")
     packs = db.query(EvidencePack).filter(EvidencePack.run_id == run_id).all()
     return [
         {
@@ -458,8 +446,38 @@ def get_evidence_manifest(
     actor: str = Depends(require_authenticated_actor),
     db: Session = Depends(get_db),
 ) -> dict:
-    _authorize_run(db, run_id, actor)
+    _authorize_run(db, run_id, actor, "evidence.read")
     try:
-        return EvidenceService(db).manifest(run_id, evidence_id)
+        return EvidenceService(db).manifest(run_id, evidence_id, actor)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post(
+    "/{run_id}/evidence/{evidence_id}/verify",
+    response_model=VerificationResultV1,
+)
+def verify_evidence(
+    run_id: str,
+    evidence_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> VerificationResultV1:
+    _authorize_run(db, run_id, actor, "evidence.read")
+    try:
+        return EvidenceService(db).verify(run_id, evidence_id, actor)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post(
+    "/{run_id}/evidence/verify-chain",
+    response_model=VerificationResultV1,
+)
+def verify_evidence_chain(
+    run_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> VerificationResultV1:
+    _authorize_run(db, run_id, actor, "evidence.read")
+    return EvidenceService(db).verify_chain(run_id, actor)

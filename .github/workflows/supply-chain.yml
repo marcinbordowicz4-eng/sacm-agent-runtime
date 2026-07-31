@@ -1,0 +1,97 @@
+name: Enterprise supply chain
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build production image
+        run: |
+          docker build \
+            --build-arg VERSION="${GITHUB_REF_NAME}" \
+            --build-arg VCS_REF="${GITHUB_SHA}" \
+            --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --tag sacm-agent-runtime:supply-chain .
+
+      - name: Create artifact directory
+        run: mkdir -p supply-chain-artifacts
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: sacm-agent-runtime:supply-chain
+          format: spdx-json
+          output-file: supply-chain-artifacts/sbom.spdx.json
+          upload-artifact: false
+
+      - name: Dependency scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          format: json
+          output: supply-chain-artifacts/dependency-scan.json
+          exit-code: "0"
+
+      - name: Secret scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: secret
+          format: json
+          output: supply-chain-artifacts/secret-scan.json
+          exit-code: "0"
+
+      - name: IaC scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          scan-ref: .
+          format: json
+          output: supply-chain-artifacts/iac-scan.json
+          exit-code: "0"
+
+      - name: Container scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: sacm-agent-runtime:supply-chain
+          format: json
+          output: supply-chain-artifacts/container-scan.json
+          exit-code: "0"
+
+      - name: Generate canonical provenance
+        run: |
+          image_digest="$(docker image inspect \
+            --format '{{index .RepoDigests 0}}' sacm-agent-runtime:supply-chain 2>/dev/null \
+            | sed 's/.*@//' || true)"
+          if [ -z "$image_digest" ]; then
+            image_digest="$(docker image inspect \
+              --format '{{.Id}}' sacm-agent-runtime:supply-chain)"
+          fi
+          python scripts/generate-ci-provenance.py \
+            --repository "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --revision "${GITHUB_SHA}" \
+            --image "${GITHUB_REPOSITORY}:supply-chain" \
+            --image-digest "${image_digest}" \
+            --sbom supply-chain-artifacts/sbom.spdx.json \
+            --output supply-chain-artifacts/provenance.intoto.jsonl
+
+      - name: Upload supply-chain evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: supply-chain-${{ github.sha }}
+          path: supply-chain-artifacts/
+          if-no-files-found: error
+          retention-days: 30

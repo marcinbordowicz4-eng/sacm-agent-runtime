@@ -3,15 +3,27 @@ import hmac
 import json
 import os
 import re
+import uuid
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
 from sacm.core.cost_service import CostService
+from sacm.core.governance_service import ResidencyService
 from sacm.core.run_service import RunService
 from sacm.core.snapshot_service import SnapshotService
+from sacm.core.supply_chain_service import (
+    SupplyChainService,
+    canonical_sha256,
+    load_evidence_hmac_key,
+)
+from sacm.core.tenancy_service import (
+    ResourceAuthorizationService,
+    TenancyService,
+    TenantContext,
+)
 from sacm.core.traceability_service import TraceabilityService
 from sacm.infrastructure.db.models import (
     Approval,
@@ -19,7 +31,9 @@ from sacm.infrastructure.db.models import (
     ContextEvent,
     EvidencePack,
     ExecutionPlan,
+    SupplyChainRecord,
 )
+from sacm.schemas.supply_chain import VerificationResultV1
 
 _SECRET_KEY = re.compile(
     r"(?:^|_)(?:api_?key|authorization|credential|password|private_?key|secret|token)(?:$|_)",
@@ -41,11 +55,24 @@ class EvidenceService:
             root if root is not None else os.getenv("SACM_EVIDENCE_ROOT", ".sacm/evidence")
         )
 
-    def build(self, run_id: str) -> EvidencePack:
-        run = self.runs.get(run_id)
-        if not run:
-            raise ValueError(f"Run {run_id} not found")
-        directory = (self.root / run_id).resolve()
+    def build(
+        self,
+        run_id: str,
+        actor_id: str | None = None,
+        *,
+        trusted_internal: bool = False,
+    ) -> EvidencePack:
+        run = self._authorize(
+            run_id, actor_id, "evidence.build", trusted_internal=trusted_internal
+        )
+        context = ResourceAuthorizationService(self.db).run_context(run)
+        existing_pack = (
+            self.db.query(EvidencePack.id)
+            .filter(EvidencePack.run_id == run_id)
+            .first()
+        )
+        directory_name = run_id if existing_pack is None else f"{run_id}-{uuid.uuid4()}"
+        directory = (self.root / directory_name).resolve()
         root = self.root.resolve()
         if directory.parent != root:
             raise ValueError("Evidence path must remain inside SACM_EVIDENCE_ROOT.")
@@ -73,6 +100,9 @@ class EvidenceService:
         delivery_evidence = self._delivery_evidence(run)
         costs = CostService(self.db).summarize_task(run.task_id)
         artifact_inventory = self._artifact_inventory(run)
+        supply_chain_records = self._supply_chain_records(run.id)
+        supply_chain_completeness = SupplyChainService(self.db).completeness(run.id)
+        signing = self._signing_metadata()
         manifest = {
             "schema_version": "run-manifest/v2",
             "evidence_pack_version": "2.0",
@@ -98,6 +128,10 @@ class EvidenceService:
             "usage_cost": costs,
             "traceability": traceability.model_dump(mode="json"),
             "artifacts": artifact_inventory,
+            "supply_chain": {
+                "records": supply_chain_records,
+                "completeness": supply_chain_completeness.model_dump(mode="json"),
+            },
             "event_chain": {
                 "algorithm": "sha256",
                 "event_count": len(events),
@@ -109,15 +143,12 @@ class EvidenceService:
                 "manifest_checksum_algorithm": "sha256",
                 "checksums_file": "checksums.sha256",
                 "signature": {
-                    "present": bool(os.getenv("SACM_EVIDENCE_HMAC_KEY")),
-                    "algorithm": (
-                        "hmac-sha256"
-                        if os.getenv("SACM_EVIDENCE_HMAC_KEY")
-                        else None
-                    ),
+                    "present": signing["present"],
+                    "algorithm": signing["algorithm"],
+                    "key_id": signing["key_id"],
                     "path": (
                         "signature.sig"
-                        if os.getenv("SACM_EVIDENCE_HMAC_KEY")
+                        if signing["present"]
                         else None
                     ),
                     "signed_file": "run-manifest.json",
@@ -175,35 +206,308 @@ class EvidenceService:
         self._write_recorded_artifacts(directory, agent_records)
         self._write_provenance(directory, run, manifest)
         self._write_external_artifacts(directory, run)
-        self._write_signature(directory)
+        signature = self._write_signature(directory)
         checksums = self._checksums(directory)
         (directory / "checksums.sha256").write_text(checksums, encoding="utf-8")
         manifest_hash = hashlib.sha256(
             (directory / "run-manifest.json").read_bytes()
         ).hexdigest()
+        previous = (
+            self.db.query(EvidencePack)
+            .filter(EvidencePack.run_id == run.id)
+            .order_by(EvidencePack.created_at.desc())
+            .first()
+        )
+        previous_pack_hash = previous.pack_hash if previous else None
+        pack_hash = canonical_sha256(
+            {
+                "manifest_hash": manifest_hash,
+                "previous_pack_hash": previous_pack_hash,
+                "signature": signature.get("signature") if signature else None,
+            }
+        )
+        storage = (
+            ResidencyService(self.db).resolve(
+                organization_id=context.organization_id,
+                project_id=context.project_id,
+                category="evidence",
+            )
+            if context
+            else {}
+        )
         pack = EvidencePack(
             run_id=run.id,
+            organization_id=context.organization_id if context else None,
+            project_id=context.project_id if context else None,
+            tenant_attribution=(
+                {"schema_version": "tenant-attribution/v1", "source": context.source}
+                if context
+                else None
+            ),
+            storage_region=storage.get("region"),
+            storage_classification=storage.get("classification"),
+            storage_class=storage.get("storage_class"),
             path=str(directory),
             manifest_hash=manifest_hash,
+            pack_hash=pack_hash,
+            previous_pack_hash=previous_pack_hash,
+            signature_algorithm=signature.get("algorithm") if signature else None,
+            signature_key_id=signature.get("key_id") if signature else None,
+            public_key_fingerprint=(
+                signature.get("public_key_fingerprint") if signature else None
+            ),
+            public_key=signature.get("public_key") if signature else None,
+            signature=signature.get("signature") if signature else None,
+            verification_status="UNVERIFIED",
         )
         self.db.add(pack)
+        self.db.flush()
+        (
+            self.db.query(SupplyChainRecord)
+            .filter(
+                SupplyChainRecord.run_id == run.id,
+                SupplyChainRecord.evidence_pack_id.is_(None),
+            )
+            .update(
+                {SupplyChainRecord.evidence_pack_id: pack.id},
+                synchronize_session=False,
+            )
+        )
         self.db.commit()
         self.db.refresh(pack)
         TraceabilityService(self.db).refresh(run.task_id)
+        if context and actor_id:
+            TenancyService(self.db).audit_sensitive(
+                context.organization_id,
+                context.project_id,
+                actor_id,
+                "evidence.build",
+                "evidence_pack",
+                pack.id,
+                "Evidence pack built.",
+            )
         return pack
 
+    def verify(
+        self,
+        run_id: str,
+        evidence_id: str,
+        actor_id: str | None = None,
+        *,
+        trusted_internal: bool = False,
+    ) -> VerificationResultV1:
+        self._authorize(
+            run_id,
+            actor_id,
+            "evidence.read",
+            evidence_id=evidence_id,
+            trusted_internal=trusted_internal,
+        )
+        pack = (
+            self.db.query(EvidencePack)
+            .filter(
+                EvidencePack.id == evidence_id,
+                EvidencePack.run_id == run_id,
+            )
+            .first()
+        )
+        if pack is None:
+            raise ValueError(f"Evidence pack {evidence_id} not found.")
+        errors: list[str] = []
+        directory = Path(pack.path).resolve()
+        if directory.parent != self.root.resolve():
+            errors.append("Evidence path is outside SACM_EVIDENCE_ROOT.")
+        manifest_path = directory / "run-manifest.json"
+        manifest: dict[str, Any] = {}
+        if not manifest_path.is_file():
+            errors.append("Evidence manifest is unavailable.")
+        else:
+            try:
+                parsed = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if isinstance(parsed, dict):
+                    manifest = parsed
+                else:
+                    errors.append("Evidence manifest is invalid.")
+            except json.JSONDecodeError:
+                errors.append("Evidence manifest is invalid JSON.")
+            if hashlib.sha256(manifest_path.read_bytes()).hexdigest() != pack.manifest_hash:
+                errors.append("Evidence manifest checksum mismatch.")
+        checksums_path = directory / "checksums.sha256"
+        if not checksums_path.is_file():
+            errors.append("Evidence checksums are unavailable.")
+        else:
+            for line in checksums_path.read_text(encoding="utf-8").splitlines():
+                try:
+                    expected, name = line.split("  ", 1)
+                except ValueError:
+                    errors.append("Evidence checksum file is malformed.")
+                    continue
+                target = directory / name
+                if (
+                    not target.is_file()
+                    or hashlib.sha256(target.read_bytes()).hexdigest() != expected
+                ):
+                    errors.append(f"Checksum mismatch: {name}")
+        signature_result = VerificationResultV1(
+            status="UNSIGNED",
+            chain_valid=True,
+            errors=[],
+        )
+        signature_path = directory / "signature.sig"
+        if signature_path.is_file():
+            try:
+                signed = json.loads(signature_path.read_text(encoding="utf-8"))
+                if (
+                    signed.get("algorithm") == "hmac-sha256"
+                    and "statement" not in signed
+                ):
+                    key = load_evidence_hmac_key()
+                    expected_signature = (
+                        hmac.new(
+                            key.encode(),
+                            manifest_path.read_bytes(),
+                            hashlib.sha256,
+                        ).hexdigest()
+                        if key
+                        else None
+                    )
+                    if expected_signature and hmac.compare_digest(
+                        expected_signature, str(signed.get("signature", ""))
+                    ):
+                        signature_result = VerificationResultV1(
+                            status="VALID",
+                            algorithm="hmac-sha256",
+                            key_id="legacy-hmac",
+                            chain_valid=True,
+                        )
+                    else:
+                        errors.append("Legacy HMAC signature is invalid.")
+                else:
+                    if signed.get("statement") != manifest:
+                        errors.append("Signed manifest content mismatch.")
+                    for field, recorded in (
+                        ("algorithm", pack.signature_algorithm),
+                        ("key_id", pack.signature_key_id),
+                        ("public_key_fingerprint", pack.public_key_fingerprint),
+                        ("public_key", pack.public_key),
+                        ("signature", pack.signature),
+                    ):
+                        if signed.get(field) != recorded:
+                            errors.append(f"Recorded evidence {field} mismatch.")
+                    signature_result = SupplyChainService.verify_signed_statement(
+                        signed
+                    )
+                    errors.extend(signature_result.errors)
+            except (json.JSONDecodeError, AttributeError):
+                errors.append("Evidence signature is invalid JSON.")
+        previous = (
+            self.db.query(EvidencePack)
+            .filter(
+                EvidencePack.run_id == run_id,
+                EvidencePack.created_at < pack.created_at,
+            )
+            .order_by(EvidencePack.created_at.desc())
+            .first()
+        )
+        if pack.pack_hash is None:
+            chain_valid = previous is None
+        else:
+            expected_previous = previous.pack_hash if previous else None
+            chain_valid = pack.previous_pack_hash == expected_previous
+            if not chain_valid:
+                errors.append("Evidence chain predecessor mismatch.")
+            expected_pack_hash = canonical_sha256(
+                {
+                    "manifest_hash": pack.manifest_hash,
+                    "previous_pack_hash": pack.previous_pack_hash,
+                    "signature": pack.signature,
+                }
+            )
+            if pack.pack_hash != expected_pack_hash:
+                chain_valid = False
+                errors.append("Evidence chain hash mismatch.")
+        status: Literal["VALID", "INVALID", "UNSIGNED"]
+        if signature_result.status == "UNSIGNED" and not errors:
+            status = "UNSIGNED"
+        else:
+            status = "VALID" if not errors else "INVALID"
+        pack.verification_status = status
+        self.db.commit()
+        return VerificationResultV1(
+            status=status,
+            algorithm=pack.signature_algorithm or signature_result.algorithm,
+            key_id=pack.signature_key_id or signature_result.key_id,
+            public_key_fingerprint=(
+                pack.public_key_fingerprint
+                or signature_result.public_key_fingerprint
+            ),
+            chain_valid=chain_valid,
+            errors=errors,
+        )
+
+    def verify_chain(
+        self,
+        run_id: str,
+        actor_id: str | None = None,
+        *,
+        trusted_internal: bool = False,
+    ) -> VerificationResultV1:
+        self._authorize(
+            run_id,
+            actor_id,
+            "evidence.read",
+            trusted_internal=trusted_internal,
+        )
+        packs = (
+            self.db.query(EvidencePack)
+            .filter(EvidencePack.run_id == run_id)
+            .order_by(EvidencePack.created_at, EvidencePack.id)
+            .all()
+        )
+        errors: list[str] = []
+        for pack in packs:
+            result = self.verify(
+                run_id,
+                pack.id,
+                actor_id,
+                trusted_internal=trusted_internal,
+            )
+            errors.extend(f"{pack.id}: {error}" for error in result.errors)
+        return VerificationResultV1(
+            status="VALID" if packs and not errors else ("UNSIGNED" if not packs else "INVALID"),
+            chain_valid=not errors,
+            errors=errors,
+        )
+
     def ingest_artifact(
-        self, run_id: str, artifact_type: str, source_path: str
+        self,
+        run_id: str,
+        artifact_type: str,
+        source_path: str,
+        actor_id: str | None = None,
+        *,
+        trusted_internal: bool = False,
     ) -> Artifact:
-        run = self.runs.get(run_id)
-        if not run or not run.target_repo_path:
+        run = self._authorize(
+            run_id, actor_id, "evidence.build", trusted_internal=trusted_internal
+        )
+        if not run.target_repo_path:
             raise ValueError("A run with a target repository is required.")
+        context = ResourceAuthorizationService(self.db).run_context(run)
         root = Path(run.target_repo_path).resolve()
         source = Path(source_path).resolve()
         if not source.is_file() or (source != root and root not in source.parents):
             raise ValueError("Artifact path must be a file inside the target repository.")
         artifact = Artifact(
             task_id=run.task_id,
+            organization_id=context.organization_id if context else None,
+            project_id=context.project_id if context else None,
+            tenant_attribution=(
+                {"schema_version": "tenant-attribution/v1", "source": context.source}
+                if context
+                else None
+            ),
+            **self._storage_metadata(context, "artifacts"),
             artifact_type=artifact_type,
             path=str(source),
             content_hash=hashlib.sha256(source.read_bytes()).hexdigest(),
@@ -212,9 +516,50 @@ class EvidenceService:
         self.db.add(artifact)
         self.db.commit()
         self.db.refresh(artifact)
+        if context and actor_id:
+            TenancyService(self.db).audit_sensitive(
+                context.organization_id,
+                context.project_id,
+                actor_id,
+                "evidence.artifact.ingest",
+                "artifact",
+                artifact.id,
+                "Evidence artifact ingested.",
+                {"artifact_type": artifact_type},
+            )
         return artifact
 
-    def manifest(self, run_id: str, evidence_id: str) -> dict[str, Any]:
+    def _storage_metadata(
+        self, context: TenantContext | None, category: str
+    ) -> dict[str, str | None]:
+        if context is None:
+            return {}
+        storage = ResidencyService(self.db).resolve(
+            organization_id=context.organization_id,
+            project_id=context.project_id,
+            category=category,
+        )
+        return {
+            "storage_region": storage["region"],
+            "storage_classification": storage["classification"],
+            "storage_class": storage["storage_class"],
+        }
+
+    def manifest(
+        self,
+        run_id: str,
+        evidence_id: str,
+        actor_id: str | None = None,
+        *,
+        trusted_internal: bool = False,
+    ) -> dict[str, Any]:
+        self._authorize(
+            run_id,
+            actor_id,
+            "evidence.read",
+            evidence_id=evidence_id,
+            trusted_internal=trusted_internal,
+        )
         pack = (
             self.db.query(EvidencePack)
             .filter(
@@ -238,6 +583,27 @@ class EvidenceService:
         if not isinstance(content, dict):
             raise ValueError("Evidence manifest is invalid.")
         return content
+
+    def _authorize(
+        self,
+        run_id: str,
+        actor_id: str | None,
+        permission: str,
+        *,
+        evidence_id: str | None = None,
+        trusted_internal: bool,
+    ):
+        resources = ResourceAuthorizationService(self.db)
+        if actor_id is not None:
+            return resources.require_evidence(
+                run_id, actor_id, permission, evidence_id
+            )
+        if resources._production() and not trusted_internal:
+            raise PermissionError("Authenticated tenant context is required.")
+        run = self.runs.get(run_id)
+        if not run:
+            raise ValueError(f"Run {run_id} not found")
+        return run
 
     @staticmethod
     def _write_json(path: Path, content: Any) -> None:
@@ -371,20 +737,31 @@ class EvidenceService:
             },
         )
 
-    def _write_signature(self, directory: Path) -> None:
-        key = os.getenv("SACM_EVIDENCE_HMAC_KEY")
-        if not key:
-            return
-        manifest = (directory / "run-manifest.json").read_bytes()
-        signature = hmac.new(key.encode(), manifest, hashlib.sha256).hexdigest()
-        self._write_json(
-            directory / "signature.sig",
-            {
-                "algorithm": "hmac-sha256",
-                "signed_file": "run-manifest.json",
-                "signature": signature,
-            },
+    def _write_signature(self, directory: Path) -> dict[str, Any] | None:
+        if not self._signing_metadata()["present"]:
+            return None
+        manifest = json.loads(
+            (directory / "run-manifest.json").read_text(encoding="utf-8")
         )
+        signed = SupplyChainService.sign_statement(manifest)
+        signed["signed_file"] = "run-manifest.json"
+        self._write_json(directory / "signature.sig", signed)
+        return signed
+
+    @staticmethod
+    def _signing_metadata() -> dict[str, Any]:
+        private_key_file = os.getenv("SACM_EVIDENCE_SIGNING_PRIVATE_KEY_FILE")
+        hmac_present = bool(
+            os.getenv("SACM_EVIDENCE_HMAC_KEY_FILE")
+            or os.getenv("SACM_EVIDENCE_HMAC_KEY")
+        )
+        return {
+            "present": bool(private_key_file or hmac_present),
+            "algorithm": (
+                "ed25519" if private_key_file else ("hmac-sha256" if hmac_present else None)
+            ),
+            "key_id": os.getenv("SACM_EVIDENCE_SIGNING_KEY_ID"),
+        }
 
     def _write_external_artifacts(self, directory: Path, run: Any) -> None:
         target_names = {
@@ -662,6 +1039,33 @@ class EvidenceService:
                 "metadata": artifact.metadata_,
             }
             for artifact in artifacts
+        ]
+
+    def _supply_chain_records(self, run_id: str) -> list[dict[str, Any]]:
+        records = (
+            self.db.query(SupplyChainRecord)
+            .filter(SupplyChainRecord.run_id == run_id)
+            .order_by(SupplyChainRecord.created_at, SupplyChainRecord.id)
+            .all()
+        )
+        return [
+            {
+                "id": record.id,
+                "schema_version": record.schema_version,
+                "record_type": record.record_type,
+                "format": record.format,
+                "subject": {
+                    "name": record.subject_name,
+                    "digest": {"sha256": record.subject_digest},
+                },
+                "artifact_sha256": record.artifact_sha256,
+                "status": record.status,
+                "coverage": record.coverage,
+                "artifact_id": record.artifact_id,
+                "image_id": record.image_id,
+                "release_id": record.release_id,
+            }
+            for record in records
         ]
 
     @staticmethod

@@ -11,13 +11,17 @@ from apps.api.routes import (
     approvals,
     context,
     execution_plan,
+    execution_plane,
     github,
+    governance,
     intake,
     memory,
     organizations,
     repository,
+    resilience,
     router,
     runs,
+    supply_chain,
     tasks,
     traceability,
 )
@@ -28,6 +32,7 @@ from sacm.core.auth_service import (
     validate_production_configuration,
 )
 from sacm.core.repository_audit_service import TaskContextError
+from sacm.core.tenancy_service import AuthorizationError
 from sacm.infrastructure.db.session import engine
 
 
@@ -40,6 +45,11 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="SACM Agent Runtime", version="0.1.0", lifespan=lifespan)
+
+
+@app.exception_handler(AuthorizationError)
+def authorization_error(_: Request, exc: AuthorizationError) -> JSONResponse:
+    return JSONResponse(status_code=403, content={"detail": str(exc)})
 
 
 @app.exception_handler(RepositoryPathError)
@@ -105,6 +115,12 @@ app.include_router(
     dependencies=authenticated_dependencies,
 )
 app.include_router(
+    governance.router,
+    prefix="/v1/organizations",
+    tags=["enterprise-governance"],
+    dependencies=authenticated_dependencies,
+)
+app.include_router(
     application_context.router,
     prefix="/v1",
     tags=["application-context"],
@@ -128,6 +144,14 @@ app.include_router(
     tags=["analytics"],
     dependencies=authenticated_dependencies,
 )
+app.include_router(execution_plane.router, prefix="/v1", tags=["execution-plane"])
+app.include_router(
+    supply_chain.router,
+    prefix="/v1",
+    tags=["supply-chain"],
+    dependencies=authenticated_dependencies,
+)
+app.include_router(resilience.router, prefix="/v1", tags=["resilience"])
 
 
 @app.get("/health")

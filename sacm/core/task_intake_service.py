@@ -4,7 +4,7 @@ from typing import Any
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from sacm.infrastructure.db.models import ContextEvent, Task, TaskClarification
+from sacm.infrastructure.db.models import ContextEvent, Project, Task, TaskClarification
 from sacm.schemas.task import JiraWebhook, ReadinessAssessment, TaskContractV1
 
 READINESS_THRESHOLD = 0.8
@@ -90,7 +90,18 @@ class TaskIntakeService:
             None,
         )
         now = datetime.utcnow()
+        project = self.db.get(Project, contract.project_id) if contract.project_id else None
+        attribution = (
+            {"schema_version": "tenant-attribution/v1", "source": "task_contract"}
+            if project
+            else None
+        )
         task = Task(
+            organization_id=project.organization_id if project else None,
+            project_id=project.id if project else None,
+            tenant_attribution=attribution,
+            data_region=project.data_region if project else None,
+            data_classification=project.data_classification if project else None,
             title=contract.title,
             description=contract.description,
             target_repo_path=repository_path,
@@ -119,6 +130,11 @@ class TaskIntakeService:
         self.db.add(
             ContextEvent(
                 task_id=task.id,
+                organization_id=project.organization_id if project else None,
+                project_id=project.id if project else None,
+                tenant_attribution=attribution,
+                data_region=project.data_region if project else None,
+                data_classification=project.data_classification if project else None,
                 event_type="task_contract_ingested",
                 payload={
                     "connector_type": contract.connector_type,
@@ -173,6 +189,11 @@ class TaskIntakeService:
         self.db.add(
             ContextEvent(
                 task_id=task.id,
+                organization_id=task.organization_id,
+                project_id=task.project_id,
+                tenant_attribution=task.tenant_attribution,
+                data_region=task.data_region,
+                data_classification=task.data_classification,
                 event_type="task_clarification_answered",
                 payload={
                     "field_name": clarification.field_name,

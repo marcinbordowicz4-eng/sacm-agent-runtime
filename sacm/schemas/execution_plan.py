@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 AgentRole = Literal["reasoner", "coder", "reviewer", "tester", "security"]
 PolicyPackName = Literal["default", "strict"]
@@ -85,20 +85,70 @@ class SecretRequestV1(BaseModel):
     schema_version: Literal["secret-request/v1"] = "secret-request/v1"
     name: str = Field(min_length=1, max_length=255)
     purpose: str = Field(min_length=1, max_length=1000)
-    environment_variable: str = Field(
-        min_length=1, max_length=255, pattern=r"^[A-Z][A-Z0-9_]*$"
+    provider: Literal[
+        "environment",
+        "vault",
+        "aws-secrets-manager",
+        "aws-sts",
+        "azure-key-vault",
+        "azure-managed-identity",
+    ] = "environment"
+    provider_config: str | None = Field(default=None, min_length=1, max_length=255)
+    environment_variable: str | None = Field(
+        default=None, min_length=1, max_length=255, pattern=r"^[A-Z][A-Z0-9_]*$"
     )
+    resource: str | None = Field(default=None, min_length=1, max_length=2000)
+    permissions: list[str] = Field(default_factory=list, max_length=100)
+    audience: str | None = Field(default=None, min_length=1, max_length=1000)
     required: bool = True
     step_keys: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
+
+    @field_validator("environment_variable")
+    @classmethod
+    def require_environment_reference(
+        cls, value: str | None, info: Any
+    ) -> str | None:
+        if info.data.get("provider", "environment") == "environment" and not value:
+            raise ValueError(
+                "environment_variable is required for the environment provider."
+            )
+        return value
+
+    @model_validator(mode="after")
+    def require_provider_resource(self) -> "SecretRequestV1":
+        if self.provider == "environment" and not self.environment_variable:
+            raise ValueError(
+                "environment_variable is required for the environment provider."
+            )
+        if self.provider != "environment" and not self.resource:
+            raise ValueError("resource is required for non-environment providers.")
+        if self.provider == "environment" and (
+            self.permissions
+            or self.audience
+            or self.resource
+            or self.provider_config
+        ):
+            raise ValueError(
+                "Environment references cannot request permissions, resources, "
+                "or audiences."
+            )
+        return self
 
 
 class SecretReferenceV1(BaseModel):
     schema_version: Literal["secret-reference/v1"] = "secret-reference/v1"
     request_name: str
     handle: str
-    source: Literal["environment"]
+    source: Literal[
+        "environment",
+        "vault",
+        "aws-secrets-manager",
+        "aws-sts",
+        "azure-key-vault",
+        "azure-managed-identity",
+    ]
     available: bool
     metadata: dict[str, Any] = Field(default_factory=dict)
 

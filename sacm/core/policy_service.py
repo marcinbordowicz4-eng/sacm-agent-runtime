@@ -7,7 +7,18 @@ from typing import Any
 import httpx
 from sqlalchemy.orm import Session
 
-from sacm.infrastructure.db.models import Approval, Run
+from sacm.core.tenancy_service import (
+    ROLE_PERMISSIONS,
+    ResourceAuthorizationService,
+    TenancyService,
+    TenantAuditService,
+)
+from sacm.infrastructure.db.models import (
+    Approval,
+    Membership,
+    Run,
+    ServiceCredential,
+)
 
 
 def _utcnow() -> datetime:
@@ -66,8 +77,38 @@ class PolicyService:
         resource: dict[str, Any],
         *,
         run_id: str | None = None,
+        actor_id: str | None = None,
+        trusted_internal: bool = False,
     ) -> None:
+        run = None
+        context = None
+        if run_id and self.db is not None:
+            resources = ResourceAuthorizationService(self.db)
+            if actor_id is not None:
+                run = resources.require_run(run_id, actor_id, "runs.execute")
+            elif resources._production() and not trusted_internal:
+                raise PermissionError("Authenticated tenant context is required.")
+            else:
+                run = self.db.get(Run, run_id)
+            context = resources.run_context(run) if run else None
+        elif run_id and os.getenv(
+            "SACM_ENVIRONMENT", "development"
+        ).lower() == "production" and not trusted_internal:
+            raise PermissionError("Policy actions require a tenant-aware database.")
         decision = self.evaluate(action, resource, run_id=run_id)
+        if context and actor_id:
+            assert self.db is not None
+            TenantAuditService(self.db).record(
+                organization_id=context.organization_id,
+                project_id=context.project_id,
+                actor_id=actor_id,
+                action=f"policy.{action}",
+                resource_type="run",
+                resource_id=run_id,
+                decision="ALLOW" if decision.allowed else "DENY",
+                reason=decision.reason,
+                metadata={"requires_approval": decision.requires_approval},
+            )
         if not decision.allowed:
             raise PermissionError(decision.reason)
         if decision.requires_approval:
@@ -89,9 +130,9 @@ class PolicyService:
     def decide(self, approval_id: str, approve: bool, actor: str, reason: str) -> Approval:
         if self.db is None:
             raise RuntimeError("Approval persistence requires a database session.")
-        approval = self.db.get(Approval, approval_id)
-        if not approval:
-            raise ValueError(f"Approval {approval_id} not found.")
+        approval = ResourceAuthorizationService(self.db).require_approval(
+            approval_id, actor, "approvals.decide"
+        )
         if approval.status != "PENDING":
             raise ValueError(f"Approval {approval_id} has already been decided.")
         approval.status = "APPROVED" if approve else "REJECTED"
@@ -100,7 +141,66 @@ class PolicyService:
         approval.decided_at = _utcnow()
         self.db.commit()
         self.db.refresh(approval)
+        run = self.db.get(Run, approval.run_id)
+        context = (
+            ResourceAuthorizationService(self.db).run_context(run) if run else None
+        )
+        if context:
+            TenancyService(self.db).audit_sensitive(
+                context.organization_id,
+                context.project_id,
+                actor,
+                "approval.decide",
+                "approval",
+                approval.id,
+                "Approval decision recorded.",
+                {"decision": approval.status},
+            )
         return approval
+
+    def list_approvals(
+        self, actor: str, run_id: str | None = None
+    ) -> list[Approval]:
+        if self.db is None:
+            raise RuntimeError("Approval persistence requires a database session.")
+        query = self.db.query(Approval)
+        if run_id:
+            ResourceAuthorizationService(self.db).require_run(
+                run_id, actor, "approvals.read"
+            )
+            query = query.filter(Approval.run_id == run_id)
+        elif actor.startswith("service:"):
+            credential = self.db.get(
+                ServiceCredential, actor.removeprefix("service:")
+            )
+            if credential is None or (
+                "approvals.read"
+                not in ROLE_PERMISSIONS.get(credential.role, frozenset()).union(
+                    credential.permissions or []
+                )
+            ):
+                return []
+            query = query.filter(
+                Approval.organization_id == credential.organization_id
+            )
+            if credential.project_id:
+                query = query.filter(Approval.project_id == credential.project_id)
+        else:
+            memberships = (
+                self.db.query(Membership)
+                .filter(Membership.actor_id == actor)
+                .all()
+            )
+            organization_ids = [
+                membership.organization_id
+                for membership in memberships
+                if "approvals.read"
+                in ROLE_PERMISSIONS.get(
+                    membership.role, frozenset()
+                ).union(membership.permissions or [])
+            ]
+            query = query.filter(Approval.organization_id.in_(organization_ids))
+        return query.order_by(Approval.requested_at.desc()).all()
 
     def _pending_or_approved(
         self, run_id: str, action: str, resource: dict[str, Any]
@@ -127,6 +227,16 @@ class PolicyService:
         approval = Approval(
             id=str(uuid.uuid4()),
             run_id=run_id,
+            organization_id=run.organization_id,
+            project_id=run.project_id,
+            tenant_attribution=(
+                {
+                    "schema_version": "tenant-attribution/v1",
+                    "source": "approval/run bridge",
+                }
+                if run.organization_id or run.project_id
+                else None
+            ),
             action=action,
             resource=resource,
             status="PENDING",
@@ -409,8 +519,16 @@ class ToolGateway:
         resource: dict[str, Any],
         *,
         run_id: str | None = None,
+        actor_id: str | None = None,
+        trusted_internal: bool = False,
     ) -> None:
-        self.policies.require_allowed(action, resource, run_id=run_id)
+        self.policies.require_allowed(
+            action,
+            resource,
+            run_id=run_id,
+            actor_id=actor_id,
+            trusted_internal=trusted_internal,
+        )
 
 
 def _csv_env(name: str) -> set[str]:

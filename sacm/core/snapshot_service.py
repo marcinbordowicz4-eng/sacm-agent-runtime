@@ -104,6 +104,16 @@ class SnapshotService:
         )
         snapshot = RunSnapshot(
             id=snapshot_id,
+            organization_id=run.organization_id,
+            project_id=run.project_id,
+            tenant_attribution=(
+                {
+                    "schema_version": "tenant-attribution/v1",
+                    "source": "snapshot/run bridge",
+                }
+                if run.organization_id or run.project_id
+                else None
+            ),
             checksum=checksum,
             **content,
         )
@@ -217,7 +227,11 @@ class SnapshotService:
         replay = Run(
             id=str(uuid.uuid4()),
             task=source.task,
+            organization_id=source.organization_id,
             project_id=source.project_id,
+            tenant_attribution=source.tenant_attribution,
+            data_region=source.data_region,
+            data_classification=source.data_classification,
             status="PLANNING",
             workflow_version=source.workflow_version,
             source_revision=source.source_revision,
@@ -243,6 +257,16 @@ class SnapshotService:
                 )
             )
         link = RunReplay(
+            organization_id=source.organization_id,
+            project_id=source.project_id,
+            tenant_attribution=(
+                {
+                    "schema_version": "tenant-attribution/v1",
+                    "source": "replay/source run bridge",
+                }
+                if source.organization_id or source.project_id
+                else None
+            ),
             source_run_id=source.id,
             source_snapshot_id=snapshot.id,
             replay_run_id=replay.id,

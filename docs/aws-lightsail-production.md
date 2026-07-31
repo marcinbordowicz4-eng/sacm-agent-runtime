@@ -20,6 +20,9 @@ was created. The static IP was retained and moved to the Xlarge instance.
    `SACM_OIDC_JWKS_URL` in `production.env`. The issuer must exactly match
    token `iss`.
 4. Set a monitored mailbox in `ACME_EMAIL`.
+5. Install and verify `runsc` on every separate executor host as documented in
+   `production-readiness.md`. The control-plane Compose stack does not install
+   gVisor. Do not enroll an executor until its fail-closed runtime check passes.
 
 Do not set `SACM_AUTH_REQUIRED=false` to bypass this requirement.
 
@@ -38,6 +41,9 @@ docker compose --env-file production.env -f docker-compose.production.yml up -d 
 
 The API starts only after its packaged database migration completes. Traefik
 obtains and renews the certificate automatically after DNS propagation.
+The stack starts the remote control plane only. Deploy executors separately,
+use an organization/project admin to issue a one-use enrollment token, and
+store the returned executor bearer credential in the executor's secret store.
 
 ## Backup and recovery
 

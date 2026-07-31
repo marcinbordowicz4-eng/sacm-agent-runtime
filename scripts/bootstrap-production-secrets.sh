@@ -17,4 +17,14 @@ create_secret postgres_password
 create_secret evidence_hmac_key
 create_secret github_webhook_secret
 
+evidence_signing_key="$secrets_dir/evidence_signing_private_key"
+if [ ! -f "$evidence_signing_key" ]; then
+  openssl genpkey -algorithm ED25519 -out "$evidence_signing_key"
+fi
+
+job_signing_key="$secrets_dir/job_signing_private_key"
+if [ ! -f "$job_signing_key" ]; then
+  openssl genpkey -algorithm ED25519 -out "$job_signing_key"
+fi
+
 printf 'Created missing secrets in %s; existing secrets were not changed.\n' "$secrets_dir"

@@ -4,7 +4,8 @@ from typing import Any, Optional
 
 from sqlalchemy.orm import Session
 
-from sacm.infrastructure.db.models import ContextEvent
+from sacm.core.tenancy_service import ResourceAuthorizationService
+from sacm.infrastructure.db.models import ContextEvent, Task
 
 
 class EventService:
@@ -18,9 +19,22 @@ class EventService:
         payload: dict[str, Any],
         agent_id: Optional[str] = None,
     ) -> ContextEvent:
+        task = self.db.get(Task, task_id)
+        context = (
+            ResourceAuthorizationService(self.db).task_context(task) if task else None
+        )
         event = ContextEvent(
             id=str(uuid.uuid4()),
             task_id=task_id,
+            organization_id=context.organization_id if context else None,
+            project_id=context.project_id if context else None,
+            tenant_attribution=(
+                {"schema_version": "tenant-attribution/v1", "source": context.source}
+                if context
+                else None
+            ),
+            data_region=task.data_region if task else None,
+            data_classification=task.data_classification if task else None,
             agent_id=agent_id,
             event_type=event_type,
             payload=payload,

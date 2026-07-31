@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from sacm.adapters.repository_adapter import RepositoryAdapter
+from sacm.core.auth_service import require_authenticated_actor
 from sacm.core.repository_audit_service import RepositoryAuditService
 from sacm.infrastructure.db.session import get_db
 
@@ -28,8 +29,12 @@ class RunTestsRequest(RepositoryPathRequest):
 
 @router.post("/analyze")
 def analyze_repository(
-    payload: RepositoryPathRequest, db: Session = Depends(get_db)
+    payload: RepositoryPathRequest,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
 ) -> dict:
+    audit = RepositoryAuditService(db)
+    audit.authorize(payload.task_id, payload.repo_path, actor, "tasks.read")
     adapter = RepositoryAdapter(payload.repo_path)
     files = adapter.list_files()
     RepositoryAuditService(db).record(
@@ -37,14 +42,20 @@ def analyze_repository(
         "analyzed",
         str(adapter.repo_path),
         {"file_count": len(files)},
+        actor_id=actor,
+        permission="tasks.read",
     )
     return {"repo_path": str(adapter.repo_path), "files": files}
 
 
 @router.post("/create-worktree")
 def create_worktree(
-    payload: CreateWorktreeRequest, db: Session = Depends(get_db)
+    payload: CreateWorktreeRequest,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
 ) -> dict:
+    audit = RepositoryAuditService(db)
+    audit.authorize(payload.task_id, payload.repo_path, actor, "tasks.write")
     adapter = RepositoryAdapter(payload.repo_path)
     worktree_path = adapter.create_worktree(payload.branch_name)
     RepositoryAuditService(db).record(
@@ -59,14 +70,20 @@ def create_worktree(
             f"Created or reused worktree {worktree_path} on "
             f"branch {payload.branch_name}."
         ),
+        actor_id=actor,
+        permission="tasks.write",
     )
     return {"worktree_path": worktree_path}
 
 
 @router.post("/apply-patch")
 def apply_patch(
-    payload: ApplyPatchRequest, db: Session = Depends(get_db)
+    payload: ApplyPatchRequest,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
 ) -> dict:
+    audit = RepositoryAuditService(db)
+    audit.authorize(payload.task_id, payload.repo_path, actor, "tasks.write")
     adapter = RepositoryAdapter(payload.repo_path)
     adapter.apply_patch(payload.patch)
     diff = adapter.get_diff()
@@ -85,12 +102,20 @@ def apply_patch(
             f"Applied implementation patch {summary['sha256'][:12]} affecting "
             f"{', '.join(changed_files) if changed_files else 'no detected files'}."
         ),
+        actor_id=actor,
+        permission="tasks.write",
     )
     return {"status": "applied"}
 
 
 @router.post("/run-tests")
-def run_tests(payload: RunTestsRequest, db: Session = Depends(get_db)) -> dict:
+def run_tests(
+    payload: RunTestsRequest,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> dict:
+    audit = RepositoryAuditService(db)
+    audit.authorize(payload.task_id, payload.repo_path, actor, "runs.execute")
     adapter = RepositoryAdapter(payload.repo_path)
     result = adapter.run_command(payload.command)
     RepositoryAuditService(db).record(
@@ -109,14 +134,20 @@ def run_tests(payload: RunTestsRequest, db: Session = Depends(get_db)) -> dict:
             f"{'passed' if result['returncode'] == 0 else 'failed'} "
             f"with exit code {result['returncode']}."
         ),
+        actor_id=actor,
+        permission="runs.execute",
     )
     return result
 
 
 @router.post("/diff")
 def diff_repository(
-    payload: RepositoryPathRequest, db: Session = Depends(get_db)
+    payload: RepositoryPathRequest,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
 ) -> dict:
+    audit = RepositoryAuditService(db)
+    audit.authorize(payload.task_id, payload.repo_path, actor, "tasks.read")
     adapter = RepositoryAdapter(payload.repo_path)
     diff = adapter.get_diff()
     summary = RepositoryAuditService.content_summary(diff)
@@ -130,6 +161,8 @@ def diff_repository(
             f"Captured implementation diff {summary['sha256'][:12]} affecting "
             f"{', '.join(changed_files) if changed_files else 'no detected files'}."
         ),
+        actor_id=actor,
+        permission="tasks.read",
     )
     return {
         "diff": diff,

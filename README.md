@@ -39,6 +39,7 @@ Infrastructure adapters
 - Redis client
 - Git repository / worktree helpers
 - Docker / shell execution
+- isolated customer or SACM executor services
 ```
 
 ### Versioned agent contracts
@@ -62,6 +63,34 @@ In production, contracts must identify a SACM project through `project_id` or
 a repository reference mapped to a project. Task context, plans, requirements,
 traceability, and clarifications then enforce project membership and minimum
 viewer/developer roles.
+
+### Enterprise IAM and tenant isolation
+
+Production authentication accepts either configured OIDC bearer tokens or
+opaque `sacm_service_...` credentials. Service credentials are issued once;
+only a SHA-256 token hash and non-secret prefix are stored. Credentials have an
+organization scope, optional project scope, role, additive permissions,
+expiry, revocation, and last-used timestamp.
+
+The default owner/admin/developer/viewer roles remain available, with explicit
+permissions for `runs.read/write/execute`, `tasks.read/write`,
+`evidence.read/build`, `approvals.read/decide`, `executors.manage/use`,
+`audit.export`, and `data.manage`. Authorization is enforced in core services,
+not only API routes. Tenant attribution is stored on tasks, runs, context,
+memory, artifacts, evidence, approvals, snapshots/replays, plans, jobs, and
+executors; legacy rows remain nullable until safely attributed through
+task/run/project bridges.
+
+Organization IAM APIs:
+
+- `POST/GET /v1/organizations/{organization_id}/service-credentials`
+- `POST /v1/organizations/{organization_id}/service-credentials/{id}/revoke`
+- `GET /v1/organizations/{organization_id}/audit-events`
+- `POST /v1/organizations/{organization_id}/tenant-backfill`
+
+Authorization and sensitive actions append canonical, per-organization
+SHA-256 hash-chained audit events. Audit metadata excludes bearer tokens and
+other secret-like values.
 
 ### Application context and impact analysis
 
@@ -210,7 +239,43 @@ JSON or text artifact is written. Retrieve a checksum-verified manifest with:
 POST /v1/runs/{run_id}/evidence
 GET  /v1/runs/{run_id}/evidence
 GET  /v1/runs/{run_id}/evidence/{evidence_id}/manifest
+POST /v1/runs/{run_id}/evidence/{evidence_id}/verify
+POST /v1/runs/{run_id}/evidence/verify-chain
 ```
+
+### Enterprise software supply chain
+
+Versioned `supply-chain-record/v1`, image, release, provenance, attestation,
+and verification contracts persist SBOMs and scan results against exact
+SHA-256 subjects. SPDX JSON and CycloneDX JSON receive lightweight structural,
+artifact-hash, and subject-identity validation without loading parser
+frameworks. Supported mandatory production evidence types are SBOM,
+provenance, dependency scan, secret scan, IaC scan, and container scan; run
+responses expose `supply_chain_status` and `missing_supply_chain_evidence`.
+
+Provenance uses deterministic canonical JSON and records source/revision,
+builder/executor, commands, materials/products, agent/model/framework,
+policy/security decisions, snapshots/replay, environment, and image digest.
+Attestations and Evidence Packs prefer Ed25519 keys loaded only from
+`SACM_EVIDENCE_SIGNING_PRIVATE_KEY_FILE`, retain legacy HMAC verification, and
+record only public key material, fingerprints, key IDs, signatures, and chain
+hashes. Verification returns explicit `VALID`, `INVALID`, or `UNSIGNED`.
+
+Use `/v1/runs/{run_id}/supply-chain/...` for records, provenance, images,
+releases, attestations, chain verification, and completeness. Local release or
+image attestations can be generated and checked without an API:
+
+```bash
+python scripts/supply-chain-attestation.py generate \
+  --subject dist/package.whl --predicate release.json \
+  --predicate-type https://sacm.dev/release/v1 \
+  --key secrets/evidence_signing_private_key --output attestation.json
+python scripts/supply-chain-attestation.py verify --attestation attestation.json
+```
+
+`.github/workflows/supply-chain.yml` builds the image, generates an SPDX SBOM,
+runs dependency/secret/IaC/container scans, emits canonical provenance, and
+uploads evidence only. It never publishes a release.
 
 ### Outcome analytics dashboard
 
@@ -425,6 +490,45 @@ then submit its `AgentResultV1` to the step's `/result` endpoint. SACM validates
 run and step identity, persists reported usage and evidence, and creates a
 durable approval when the result status is `NEEDS_APPROVAL`.
 
+## Enterprise execution plane
+
+Set `SACM_WORKFLOW_BACKEND=remote` to turn run execution into a durable,
+capability-aware `ExecutionJob` rather than invoking `LocalWorkflow`. Jobs link
+to their run, run step, task, project/organization or customer deployment and
+move through `QUEUED`, `LEASED`, `RUNNING`, and terminal states. PostgreSQL
+workers acquire rows with locking and `SKIP LOCKED`; SQLite uses a conditional
+claim for deterministic tests. Lease tokens are returned once and only their
+domain-separated SHA-256 hashes are stored.
+
+Organization/project admins use:
+
+- `POST /v1/executors/enrollment-tokens`
+- `GET /v1/executors`
+- `GET /v1/executors/health`
+- `POST /v1/executors/{executor_id}/revoke`
+
+An executor exchanges its one-use enrollment token at
+`POST /v1/executors/enroll`, then uses its opaque bearer credential with:
+
+- `POST /v1/executor/heartbeat`
+- `POST /v1/executor/rotate`
+- `POST /v1/executor/jobs/lease`
+- `POST /v1/executor/jobs/{job_id}/start`
+- `POST /v1/executor/jobs/{job_id}/heartbeat`
+- `POST /v1/executor/jobs/{job_id}/complete`
+- `POST /v1/executor/jobs/{job_id}/fail`
+
+Payload and result contracts use canonical JSON and SHA-256. Job payloads are
+signed by an Ed25519 control-plane key loaded from the environment or a secret
+file; executor results must verify against the public key and fingerprint
+stored at enrollment. SACM never stores private signing keys or raw lease,
+enrollment, or executor authentication tokens. Executor endpoints never use
+`X-SACM-Actor` as service identity.
+
+The production customer daemon, network-boundary policy, manual signed update
+flow, systemd/Kubernetes deployments, and air-gapped operations are documented
+in [`docs/customer-hosted-executor.md`](docs/customer-hosted-executor.md).
+
 ## Delivery policy and GitHub webhook
 
 `ToolGateway` evaluates external actions through OPA when `SACM_OPA_URL` is set;
@@ -440,12 +544,13 @@ issue creates a durable run only when the label matches
 to a local path in `SACM_GITHUB_REPOSITORIES_JSON`. The webhook never executes
 the run inline.
 
-## Temporal backend
+## Workflow backends
 
-The local durable backend is the default. Install `pip install -e ".[temporal]"`,
-set `SACM_WORKFLOW_BACKEND=temporal`, and run `sacm-temporal-worker` separately
-to submit each API execution to Temporal. The worker invokes the same persisted,
-idempotent local workflow activity.
+Local development keeps `SACM_WORKFLOW_BACKEND=local`. Production rejects that
+backend and should use `remote`; `temporal` remains available for deployments
+that install `.[temporal]` and run a separate worker. The legacy Temporal worker
+still invokes the local workflow activity and therefore is not an isolated
+executor substitute.
 
 ## Benchmarks
 
@@ -469,6 +574,14 @@ See `.env.example` for defaults:
 - `SACM_WORKTREE_ROOT`
 - `SACM_MAX_AGENT_STEPS`
 - `SACM_DEFAULT_TOKEN_BUDGET`
+- `SACM_WORKFLOW_BACKEND`
+- `SACM_JOB_SIGNING_PRIVATE_KEY_FILE`
+- `SACM_APPROVED_SANDBOX_RUNTIMES`
+- `SACM_SECRET_PROVIDER`
+- `SACM_APPROVED_SECRET_PROVIDERS`
+- `SACM_CREDENTIAL_LEASE_MAX_SECONDS`
+- `SACM_EXECUTION_LEASE_SECONDS`
+- `SACM_REMOTE_REQUIRED_CAPABILITIES`
 
 ## Cost telemetry
 
@@ -530,10 +643,17 @@ The included Compose stack is for local development only. A production process
 must run database migrations before accepting traffic and set
 `SACM_ENVIRONMENT=production`. Startup then refuses to run unless OIDC is
 enabled, PostgreSQL is configured, OPA is fail-closed, evidence signing is
-configured, and legacy/direct action APIs are disabled. Terminate TLS and
-enforce request limits at the deployment ingress; expose only `/health` and
-`/ready` to infrastructure probes.
+configured, the workflow backend is not local, an Ed25519 job-signing key is
+configured, sandbox runtimes are fail-closed, a non-environment secret broker is
+approved, and legacy/direct action APIs are
+disabled. The production Compose default schedules remote jobs; it does not
+install gVisor on the host. See `docs/production-readiness.md` before enrolling
+an executor. Terminate TLS and enforce request limits at the deployment
+ingress; expose only `/health` and `/ready` to infrastructure probes.
 
 The image runs `sacm-migrate` before the API. For a non-container deployment,
 run `sacm-migrate` once per release under the same `DATABASE_URL` before
 starting application replicas.
+Enterprise retention/residency policy, legal-hold-aware export and deletion,
+signed immutable audit batches, and SIEM delivery are described in
+[`docs/enterprise-governance.md`](docs/enterprise-governance.md).

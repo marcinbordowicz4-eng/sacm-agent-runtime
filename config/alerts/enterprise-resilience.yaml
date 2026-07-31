@@ -1,0 +1,42 @@
+groups:
+  - name: sacm-enterprise-resilience
+    rules:
+      - alert: SACMExecutionQueueStalled
+        expr: sacm_execution_queue_oldest_age_seconds > 300
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: SACM execution queue is not starting jobs within the SLO threshold
+      - alert: SACMNoExecutorCapacity
+        expr: sacm_executor_active_executors <= 0 and sacm_execution_queue_depth_jobs > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Queued SACM jobs have no active executor capacity
+      - alert: SACMBackupStale
+        expr: sacm_backup_freshness_seconds > 86400
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: Latest completed SACM backup is older than one day
+      - alert: SACMLeaseRecoverySpike
+        expr: increase(sacm_execution_lease_recoveries_jobs_total[15m]) > 10
+        labels:
+          severity: warning
+        annotations:
+          summary: SACM is repeatedly recovering expired or orphaned leases
+      - alert: SACMDRRestoreFailed
+        expr: increase(sacm_backup_operations_operations_total{status!="COMPLETED"}[1h]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: SACM backup or disaster-recovery verification failed
+      - alert: SACMSLOBreached
+        expr: increase(sacm_slo_evaluations_evaluations_total{status="BREACHED"}[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: A SACM enterprise resilience SLO exhausted its error budget

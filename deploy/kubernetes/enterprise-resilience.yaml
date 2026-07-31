@@ -1,0 +1,395 @@
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+handler: runsc
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sacm-runtime-config
+data:
+  SACM_ENVIRONMENT: production
+  SACM_AUTH_REQUIRED: "true"
+  SACM_LEGACY_API_ENABLED: "false"
+  SACM_DIRECT_ACTION_API_ENABLED: "false"
+  SACM_WORKFLOW_BACKEND: temporal
+  SACM_TEMPORAL_ADDRESS: temporal-frontend:7233
+  SACM_TEMPORAL_NAMESPACE: default
+  SACM_TEMPORAL_TASK_QUEUE: sacm-runs
+  SACM_APPROVED_SANDBOX_RUNTIMES: runsc
+  SACM_HEALTH_REDIS_REQUIRED: "true"
+  SACM_HEALTH_OPA_REQUIRED: "true"
+  SACM_BACKUP_ROOT: /backups
+  SACM_BACKUP_MAX_AGE_SECONDS: "86400"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sacm-migrations
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: sacm-migrations
+    spec:
+      restartPolicy: OnFailure
+      runtimeClassName: gvisor
+      containers:
+        - name: migrate
+          image: ghcr.io/example/sacm-agent-runtime:replace-me
+          command: ["sacm-migrate"]
+          envFrom:
+            - configMapRef:
+                name: sacm-runtime-config
+            - secretRef:
+                name: sacm-runtime-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sacm-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: sacm-api
+  template:
+    metadata:
+      labels:
+        app: sacm-api
+    spec:
+      runtimeClassName: gvisor
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: sacm-api
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app: sacm-api
+      containers:
+        - name: api
+          image: ghcr.io/example/sacm-agent-runtime:replace-me
+          command: ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: sacm-runtime-config
+            - secretRef:
+                name: sacm-runtime-secrets
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: runtime
+              mountPath: /app/.sacm
+            - name: backups
+              mountPath: /backups
+      volumes:
+        - name: runtime
+          emptyDir: {}
+        - name: backups
+          persistentVolumeClaim:
+            claimName: sacm-backups
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sacm-api
+spec:
+  selector:
+    app: sacm-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sacm-api
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: sacm-api
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sacm-worker
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: sacm-worker
+  template:
+    metadata:
+      labels:
+        app: sacm-worker
+    spec:
+      runtimeClassName: gvisor
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app: sacm-worker
+      containers:
+        - name: worker
+          image: ghcr.io/example/sacm-agent-runtime:replace-me
+          command: ["sacm-temporal-worker"]
+          envFrom:
+            - configMapRef:
+                name: sacm-runtime-config
+            - secretRef:
+                name: sacm-runtime-secrets
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import socket; socket.create_connection(('temporal-frontend', 7233), 2).close()"
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "4"
+              memory: 4Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: runtime
+              mountPath: /app/.sacm
+      volumes:
+        - name: runtime
+          emptyDir: {}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sacm-worker
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: sacm-worker
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: temporal-frontend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: temporal-frontend
+  template:
+    metadata:
+      labels:
+        app: temporal-frontend
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app: temporal-frontend
+      containers:
+        - name: temporal
+          image: temporalio/auto-setup:1.26
+          ports:
+            - name: grpc
+              containerPort: 7233
+          env:
+            - name: DB
+              value: postgresql
+            - name: DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: temporal-database
+                  key: port
+            - name: POSTGRES_SEEDS
+              valueFrom:
+                secretKeyRef:
+                  name: temporal-database
+                  key: host
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: temporal-database
+                  key: username
+            - name: POSTGRES_PWD
+              valueFrom:
+                secretKeyRef:
+                  name: temporal-database
+                  key: password
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: temporal-frontend
+spec:
+  selector:
+    app: temporal-frontend
+  ports:
+    - name: grpc
+      port: 7233
+      targetPort: grpc
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: temporal-frontend
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: temporal-frontend
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: sacm-execution-recovery
+spec:
+  schedule: "*/2 * * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          runtimeClassName: gvisor
+          containers:
+            - name: recover
+              image: ghcr.io/example/sacm-agent-runtime:replace-me
+              command: ["python", "scripts/recover-execution-jobs.py"]
+              envFrom:
+                - configMapRef:
+                    name: sacm-runtime-config
+                - secretRef:
+                    name: sacm-runtime-secrets
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                capabilities:
+                  drop: ["ALL"]
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: sacm-logical-backup
+spec:
+  schedule: "15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          runtimeClassName: gvisor
+          containers:
+            - name: backup
+              image: ghcr.io/example/sacm-agent-runtime:replace-me
+              command:
+                - python
+                - scripts/postgres-logical-backup.py
+                - --database
+                - sacm
+                - --storage-uri
+                - file:///backups/sacm-latest.dump.age
+                - --rpo-seconds
+                - "3600"
+                - --rto-seconds
+                - "1800"
+              envFrom:
+                - configMapRef:
+                    name: sacm-runtime-config
+                - secretRef:
+                    name: sacm-runtime-secrets
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+                - name: backup-keys
+                  mountPath: /run/backup-keys
+                  readOnly: true
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                capabilities:
+                  drop: ["ALL"]
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: sacm-backups
+            - name: backup-keys
+              secret:
+                secretName: sacm-backup-keys
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sacm-backups
+spec:
+  accessModes: ["ReadWriteMany"]
+  resources:
+    requests:
+      storage: 100Gi

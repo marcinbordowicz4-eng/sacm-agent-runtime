@@ -10,8 +10,9 @@ from sqlalchemy.orm import Session
 
 from sacm.core.agent_registry import AgentRegistry
 from sacm.core.policy_service import PolicyService
-from sacm.core.secret_broker import EnvironmentSecretBroker, SecretBroker
+from sacm.core.secret_broker import EnterpriseSecretBroker, SecretBroker
 from sacm.core.task_intake_service import TaskIntakeService
+from sacm.core.tenancy_service import ResourceAuthorizationService
 from sacm.infrastructure.db.models import (
     ApplicationContext,
     ExecutionPlan,
@@ -71,14 +72,25 @@ class ExecutionPlanningService:
         self.db = db
         self.agent_registry = agent_registry or AgentRegistry()
         self.policy_service = policy_service or PolicyService(db)
-        self.secret_broker = secret_broker or EnvironmentSecretBroker()
+        self.secret_broker = secret_broker or EnterpriseSecretBroker()
 
-    def build(self, task_id: str, *, policy_pack: str = "default") -> ExecutionPlanV1:
+    def build(
+        self,
+        task_id: str,
+        *,
+        policy_pack: str = "default",
+        actor_id: str | None = None,
+    ) -> ExecutionPlanV1:
         if policy_pack not in {"default", "strict"}:
             raise ExecutionPlanningError(f"Unknown policy pack: {policy_pack}")
         task = self.db.get(Task, task_id)
         if task is None:
             raise ExecutionPlanningNotFoundError(f"Task {task_id} not found.")
+        resources = ResourceAuthorizationService(self.db)
+        if actor_id is not None:
+            task = resources.require_task(task_id, actor_id, "tasks.write")
+        elif resources._production():
+            raise PermissionError("Authenticated tenant context is required.")
         contract = self._contract(task)
         readiness = TaskIntakeService.assess(contract)
         if not readiness.ready:
@@ -152,9 +164,22 @@ class ExecutionPlanningService:
             else "READY"
         )
         now = datetime.utcnow()
+        tenant_context = ResourceAuthorizationService(self.db).task_context(task)
         plan = ExecutionPlan(
             id=plan_id,
             task_id=task_id,
+            organization_id=(
+                tenant_context.organization_id if tenant_context else None
+            ),
+            project_id=tenant_context.project_id if tenant_context else None,
+            tenant_attribution=(
+                {
+                    "schema_version": "tenant-attribution/v1",
+                    "source": tenant_context.source,
+                }
+                if tenant_context
+                else None
+            ),
             application_context_id=application_context.id,
             revision=revision,
             schema_version="execution-plan/v1",
@@ -247,6 +272,19 @@ class ExecutionPlanningService:
                 )
             )
         self.db.commit()
+        if tenant_context and actor_id:
+            from sacm.core.tenancy_service import TenancyService
+
+            TenancyService(self.db).audit_sensitive(
+                tenant_context.organization_id,
+                tenant_context.project_id,
+                actor_id,
+                "execution_plan.build",
+                "execution_plan",
+                plan.id,
+                "Execution plan and policy decision built.",
+                {"policy_pack": policy_pack, "status": status},
+            )
         persisted = self.db.get(ExecutionPlan, plan.id)
         assert persisted is not None
         from sacm.core.traceability_service import TraceabilityService

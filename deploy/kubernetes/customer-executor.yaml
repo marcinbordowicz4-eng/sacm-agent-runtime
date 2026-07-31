@@ -1,0 +1,185 @@
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+handler: runsc
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sacm-customer-executor
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sacm-customer-executor-identity
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sacm-customer-executor-config
+data:
+  config.yaml: |
+    environment: production
+    control_plane_url: https://sacm-control.example.internal
+    state_dir: /var/lib/sacm-executor/identity
+    workspace_root: /var/lib/sacm-executor/workspaces
+    executor_identity: kubernetes-executor-01
+    display_name: Kubernetes customer executor
+    version: 1.0.0
+    runtime_kind: kubernetes-gvisor
+    sandbox_runtime: runsc
+    sandbox_verified: true
+    capabilities: [agent-task/v1]
+    runner_command:
+      - /opt/customer/bin/approved-runner
+      - --contract
+      - "{input}"
+      - --result
+      - "{output}"
+      - --workspace
+      - "{workspace}"
+    health_bind: 0.0.0.0
+    network_boundary:
+      schema_version: executor-network-boundary/v1
+      deployment_type: vpc
+      boundary_id: replace-me
+      residency_region: replace-me
+      outbound_allowlist: [sacm-control.example.internal]
+      metadata_service_blocked: true
+      private_control_plane: true
+      tls:
+        ca_bundle: /etc/sacm-executor-tls/ca.crt
+        client_certificate: /etc/sacm-executor-tls/tls.crt
+        client_key: /etc/sacm-executor-tls/tls.key
+        server_certificate_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        signing_key_sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sacm-customer-executor
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: sacm-customer-executor
+  template:
+    metadata:
+      labels:
+        app: sacm-customer-executor
+    spec:
+      serviceAccountName: sacm-customer-executor
+      automountServiceAccountToken: false
+      runtimeClassName: gvisor
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: executor
+          image: ghcr.io/example/sacm-customer-executor:replace-with-verified-digest
+          imagePullPolicy: IfNotPresent
+          command:
+            - sacm-customer-executor
+            - run
+            - --config
+            - /etc/sacm-executor/config.yaml
+          ports:
+            - name: health
+              containerPort: 8787
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: health
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: health
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/sacm-executor
+              readOnly: true
+            - name: tls
+              mountPath: /etc/sacm-executor-tls
+              readOnly: true
+            - name: identity
+              mountPath: /var/lib/sacm-executor/identity
+            - name: workspaces
+              mountPath: /var/lib/sacm-executor/workspaces
+      volumes:
+        - name: config
+          configMap:
+            name: sacm-customer-executor-config
+        - name: tls
+          secret:
+            secretName: sacm-customer-executor-mtls
+            defaultMode: 0400
+        - name: identity
+          persistentVolumeClaim:
+            claimName: sacm-customer-executor-identity
+        - name: workspaces
+          ephemeral:
+            volumeClaimTemplate:
+              spec:
+                accessModes: [ReadWriteOnce]
+                resources:
+                  requests:
+                    storage: 20Gi
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sacm-customer-executor-deny-by-default
+spec:
+  podSelector:
+    matchLabels:
+      app: sacm-customer-executor
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 8787
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - ipBlock:
+            cidr: 192.0.2.10/32
+      ports:
+        - port: 443
+          protocol: TCP

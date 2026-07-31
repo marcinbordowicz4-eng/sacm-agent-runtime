@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from sacm.core.event_service import EventService
 from sacm.core.policy_service import PolicyService
 from sacm.core.run_service import RunService
+from sacm.core.tenancy_service import ResourceAuthorizationService
 from sacm.infrastructure.db.models import Approval, RunStep
 from sacm.schemas.contracts import (
     AgentResultV1,
@@ -37,8 +38,14 @@ class ExternalAgentService:
         self.runs = RunService(db)
 
     def schedule(
-        self, run_id: str, payload: ExternalAgentStepCreate
+        self,
+        run_id: str,
+        payload: ExternalAgentStepCreate,
+        actor_id: str | None = None,
+        *,
+        trusted_internal: bool = False,
     ) -> ExternalAgentStep:
+        self._authorize(run_id, actor_id, trusted_internal)
         request = payload.model_dump(mode="json")
         step = self.runs.add_step(
             run_id,
@@ -87,8 +94,15 @@ class ExternalAgentService:
         )
 
     def submit(
-        self, run_id: str, step_id: str, result: AgentResultV1
+        self,
+        run_id: str,
+        step_id: str,
+        result: AgentResultV1,
+        actor_id: str | None = None,
+        *,
+        trusted_internal: bool = False,
     ) -> ExternalAgentSubmission:
+        self._authorize(run_id, actor_id, trusted_internal)
         step = self.runs.get_step(run_id, step_id)
         if step is None:
             raise ValueError(f"Step {step_id} not found for run {run_id}.")
@@ -196,6 +210,15 @@ class ExternalAgentService:
     def _approval_for(self, step: RunStep) -> Approval | None:
         approval_id = (step.output or {}).get("sacm_approval_id")
         return self.db.get(Approval, approval_id) if approval_id else None
+
+    def _authorize(
+        self, run_id: str, actor_id: str | None, trusted_internal: bool
+    ) -> None:
+        resources = ResourceAuthorizationService(self.db)
+        if actor_id is not None:
+            resources.require_run(run_id, actor_id, "runs.execute")
+        elif resources._production() and not trusted_internal:
+            raise PermissionError("Authenticated tenant context is required.")
 
     @staticmethod
     def _result_output(output: dict[str, Any] | None) -> dict[str, Any]:

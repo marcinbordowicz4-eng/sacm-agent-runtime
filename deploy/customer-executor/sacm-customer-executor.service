@@ -1,0 +1,34 @@
+[Unit]
+Description=SACM customer-hosted executor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sacm-executor
+Group=sacm-executor
+ExecStart=/usr/local/bin/sacm-customer-executor run --config /etc/sacm-executor/config.yaml
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+ReadWritePaths=/var/lib/sacm-executor
+StateDirectory=sacm-executor
+StateDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target

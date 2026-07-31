@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from sacm.core.auth_service import production_mode, require_authenticated_actor
 from sacm.core.policy_service import PolicyService
 from sacm.core.tenancy_service import AuthorizationError, Role, TenancyService
-from sacm.infrastructure.db.models import Approval, Membership, Run
+from sacm.infrastructure.db.models import Approval, Run
 from sacm.infrastructure.db.session import get_db
 
 router = APIRouter()
@@ -22,18 +22,10 @@ def list_approvals(
     actor: str = Depends(require_authenticated_actor),
     db: Session = Depends(get_db),
 ) -> list[dict]:
-    query = db.query(Approval)
-    if run_id:
-        _authorize_approval_run(db, run_id, actor, "developer")
-        query = query.filter(Approval.run_id == run_id)
-    elif production_mode():
-        query = (
-            query.join(Run)
-            .join(Run.project)
-            .join(Membership)
-            .filter(Membership.actor_id == actor)
-        )
-    return [_serialize(approval) for approval in query.order_by(Approval.requested_at.desc())]
+    return [
+        _serialize(approval)
+        for approval in PolicyService(db).list_approvals(actor, run_id)
+    ]
 
 
 @router.post("/{approval_id}/decision")
@@ -47,7 +39,6 @@ def decide_approval(
         approval_record = db.get(Approval, approval_id)
         if not approval_record:
             raise HTTPException(status_code=404, detail="Approval not found.")
-        _authorize_approval_run(db, approval_record.run_id, actor, "admin")
         approval = PolicyService(db).decide(
             approval_id, payload.approve, actor, payload.reason
         )
@@ -70,7 +61,9 @@ def _authorize_approval_run(
             )
         return
     try:
-        TenancyService(db).require_project_role(run.project_id, actor, minimum_role)
+        TenancyService(db).require_project_role(
+            run.project_id, actor, minimum_role
+        )
     except AuthorizationError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:

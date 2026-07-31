@@ -2,7 +2,12 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from sacm.core.auth_service import production_mode
-from sacm.core.tenancy_service import AuthorizationError, Role, TenancyService
+from sacm.core.tenancy_service import (
+    AuthorizationError,
+    ResourceAuthorizationService,
+    Role,
+    TenancyService,
+)
 from sacm.infrastructure.db.models import Project, Run, Task
 from sacm.schemas.task import TaskContractV1
 
@@ -13,19 +18,15 @@ def authorize_task(
     actor: str,
     minimum_role: Role = "viewer",
 ) -> Task:
-    task = db.get(Task, task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="Task not found")
-    projects = _task_projects(db, task)
-    if not projects:
-        if production_mode():
-            raise HTTPException(
-                status_code=403,
-                detail="Production tasks must be associated with a project.",
-            )
-        return task
-    _authorize_projects(db, projects, actor, minimum_role)
-    return task
+    permission = "tasks.read" if minimum_role == "viewer" else "tasks.write"
+    try:
+        return ResourceAuthorizationService(db).require_task(
+            task_id, actor, permission
+        )
+    except AuthorizationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 def authorize_contract(
@@ -41,7 +42,18 @@ def authorize_contract(
                 detail="Production task contracts must map to a SACM project.",
             )
         return
-    _authorize_projects(db, projects, actor, "developer")
+    tenancy = TenancyService(db)
+    try:
+        for project in projects:
+            tenancy.require_project_permission(
+                project.id,
+                actor,
+                "tasks.write",
+                resource_type="task_contract",
+                resource_id=contract.external_id,
+            )
+    except AuthorizationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 def _task_projects(db: Session, task: Task) -> list[Project]:

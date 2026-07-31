@@ -34,6 +34,8 @@ services:
       SACM_DATABASE_USER: sacm
       SACM_DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
       SACM_EVIDENCE_HMAC_KEY_FILE: /run/secrets/evidence_hmac_key
+      SACM_EVIDENCE_SIGNING_PRIVATE_KEY_FILE: /run/secrets/evidence_signing_private_key
+      SACM_EVIDENCE_SIGNING_KEY_ID: ${SACM_EVIDENCE_SIGNING_KEY_ID:-production-evidence-v1}
       SACM_GITHUB_WEBHOOK_SECRET_FILE: /run/secrets/github_webhook_secret
       REDIS_URL: redis://redis:6379
       SACM_OPA_URL: http://opa:8181
@@ -41,21 +43,52 @@ services:
       SACM_AUTH_REQUIRED: "true"
       SACM_LEGACY_API_ENABLED: "false"
       SACM_DIRECT_ACTION_API_ENABLED: "false"
-      SACM_WORKFLOW_BACKEND: local
-      SACM_DOCKER_RUNTIME: runc
+      SACM_WORKFLOW_BACKEND: remote
+      SACM_APPROVED_SANDBOX_RUNTIMES: ${SACM_APPROVED_SANDBOX_RUNTIMES:-runsc}
+      SACM_SECRET_PROVIDER: ${SACM_SECRET_PROVIDER:?Set SACM_SECRET_PROVIDER}
+      SACM_APPROVED_SECRET_PROVIDERS: ${SACM_APPROVED_SECRET_PROVIDERS:?Set SACM_APPROVED_SECRET_PROVIDERS}
+      SACM_CREDENTIAL_LEASE_MAX_SECONDS: ${SACM_CREDENTIAL_LEASE_MAX_SECONDS:-300}
+      SACM_JOB_SIGNING_PRIVATE_KEY_FILE: /run/secrets/job_signing_private_key
+      SACM_EXECUTION_LEASE_SECONDS: ${SACM_EXECUTION_LEASE_SECONDS:-120}
+      SACM_REMOTE_REQUIRED_CAPABILITIES: ${SACM_REMOTE_REQUIRED_CAPABILITIES:-agent-task/v1}
+      SACM_TEMPORAL_ADDRESS: ${SACM_TEMPORAL_ADDRESS:-temporal:7233}
+      SACM_TEMPORAL_NAMESPACE: ${SACM_TEMPORAL_NAMESPACE:-default}
+      SACM_TEMPORAL_TASK_QUEUE: ${SACM_TEMPORAL_TASK_QUEUE:-sacm-runs}
       SACM_HOST_REPOSITORY_ROOT: ${SACM_HOST_REPOSITORY_ROOT:?Set SACM_HOST_REPOSITORY_ROOT}
       SACM_REPOSITORY_ROOT: /repositories
       SACM_WORKTREE_ROOT: /worktrees
       SACM_STATE_ROOT: /app/.sacm/state
+      SACM_BACKUP_ROOT: /backups
+      SACM_BACKUP_MAX_AGE_SECONDS: ${SACM_BACKUP_MAX_AGE_SECONDS:-86400}
+      SACM_BACKUP_DB_HOST: postgres
+      SACM_BACKUP_DB_PORT: "5432"
+      SACM_BACKUP_DB_USER: sacm
+      SACM_BACKUP_DB_PASSWORD_FILE: /run/secrets/postgres_password
+      SACM_RESTORE_DB_HOST: postgres
+      SACM_RESTORE_DB_PORT: "5432"
+      SACM_RESTORE_DB_USER: sacm
+      SACM_RESTORE_DB_PASSWORD_FILE: /run/secrets/postgres_password
+      SACM_BACKUP_AGE_RECIPIENTS_FILE: /run/secrets/backup_age_recipients
+      SACM_BACKUP_AGE_IDENTITY_FILE: /run/secrets/backup_age_identity
+      SACM_BACKUP_ENCRYPTION_KEY_ID: ${SACM_BACKUP_ENCRYPTION_KEY_ID:-production-backup-v1}
+      SACM_DESTRUCTIVE_RESTORE_GUARD_FILE: /run/secrets/destructive_restore_guard
+      SACM_HEALTH_REDIS_REQUIRED: "true"
+      SACM_HEALTH_OPA_REQUIRED: "true"
     secrets:
       - postgres_password
       - evidence_hmac_key
+      - evidence_signing_private_key
       - github_webhook_secret
+      - job_signing_private_key
+      - backup_age_recipients
+      - backup_age_identity
+      - destructive_restore_guard
     volumes:
       - ${SACM_HOST_REPOSITORY_ROOT:?Set SACM_HOST_REPOSITORY_ROOT}:/repositories:rw
       - ${SACM_HOST_WORKTREE_ROOT:?Set SACM_HOST_WORKTREE_ROOT}:/worktrees:rw
       - evidence_data:/app/.sacm/evidence
       - router_state:/app/.sacm/state
+      - backup_data:/backups
     networks: [proxy, backend]
     depends_on:
       postgres:
@@ -130,11 +163,22 @@ volumes:
   evidence_data:
   router_state:
   traefik_data:
+  backup_data:
 
 secrets:
   postgres_password:
     file: ./secrets/postgres_password
   evidence_hmac_key:
     file: ./secrets/evidence_hmac_key
+  evidence_signing_private_key:
+    file: ./secrets/evidence_signing_private_key
   github_webhook_secret:
     file: ./secrets/github_webhook_secret
+  job_signing_private_key:
+    file: ./secrets/job_signing_private_key
+  backup_age_recipients:
+    file: ./secrets/backup_age_recipients
+  backup_age_identity:
+    file: ./secrets/backup_age_identity
+  destructive_restore_guard:
+    file: ./secrets/destructive_restore_guard

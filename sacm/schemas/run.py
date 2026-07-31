@@ -39,6 +39,8 @@ class RunRead(BaseModel):
     updated_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
+    supply_chain_status: str = "NOT_EVALUATED"
+    missing_supply_chain_evidence: list[str] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 

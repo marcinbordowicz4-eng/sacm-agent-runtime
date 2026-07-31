@@ -13,15 +13,20 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from sacm.schemas.context import AgentContext
 from sacm.schemas.result import AgentResult
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
-def _ctx(**kw) -> AgentContext:
-    defaults = dict(task_id="t1", task="Fix failing tests", goal="Make tests pass",
-                    current_state="planning")
+def _ctx(**kw: Any) -> AgentContext:
+    defaults: dict[str, Any] = dict(
+        task_id="t1",
+        task="Fix failing tests",
+        goal="Make tests pass",
+        current_state="planning",
+    )
     defaults.update(kw)
     return AgentContext(**defaults)
 
