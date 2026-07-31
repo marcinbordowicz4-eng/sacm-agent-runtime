@@ -22,6 +22,7 @@ COPY apps ./apps
 COPY cli ./cli
 RUN pip install --no-cache-dir -e ".[auth,mlflow,temporal]" \
     && pip install --no-cache-dir --upgrade \
+      "setuptools>=83.0.0" \
       "wheel>=0.46.2" \
       "jaraco.context>=6.1.0"
 
