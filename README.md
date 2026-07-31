@@ -58,6 +58,202 @@ durable clarification questions for missing descriptions, acceptance criteria,
 repository references, or ownership. Jira webhooks can use
 `POST /v1/intake/jira/webhooks`; plain text and Atlassian Document Format
 descriptions are normalized into the same contract.
+In production, contracts must identify a SACM project through `project_id` or
+a repository reference mapped to a project. Task context, plans, requirements,
+traceability, and clarifications then enforce project membership and minimum
+viewer/developer roles.
+
+### Application context and impact analysis
+
+Build task-scoped application context with
+`POST /v1/tasks/{task_id}/application-context`, then retrieve the durable
+snapshot or its focused impact/risk view with:
+
+- `GET /v1/tasks/{task_id}/application-context`
+- `GET /v1/tasks/{task_id}/application-context/impact-risk`
+
+All three endpoints use the same authentication as other `/v1` APIs. A build
+resolves every `TaskContractV1.repositories` entry through SACM's repository
+path controls. Local `path` values are validated by `RepositoryAdapter`;
+`full_name` values must map to a project repository path or an entry in
+`SACM_GITHUB_REPOSITORIES_JSON`. Missing, unmapped, nonexistent, and
+out-of-root repositories are persisted as explicit `unavailable` entries, so
+a partial multi-repository context cannot appear complete.
+
+The deterministic scanner records repository, module, file, dependency,
+HTTP-route, and database/schema nodes plus containment, import, and declaration
+edges. It excludes hidden/generated/vendor directories, reads no file larger
+than 1 MB, scans at most 5,000 files per repository, and caps the complete graph
+at 20,000 nodes and 40,000 edges. Impact ranking uses normalized terms from the
+task title, description, labels, and acceptance criteria, with one-hop graph
+propagation. The risk score is a deterministic 0-100 sum of returned factors
+such as unavailable repositories, API/schema/dependency reach, impact breadth,
+cross-repository scope, sensitive task terms, and scan truncation.
+
+### Governed execution planning
+
+After a task is Definition-of-Ready and has durable application context, build
+its execution plan with:
+
+```text
+POST /v1/tasks/{task_id}/execution-plan
+GET  /v1/tasks/{task_id}/execution-plan
+GET  /v1/tasks/{task_id}/execution-plan/policy
+GET  /v1/tasks/{task_id}/execution-plan/security-review
+GET  /v1/tasks/{task_id}/execution-plan/secret-requirements
+```
+
+The optional build body is `{"policy_pack": "default"}` or
+`{"policy_pack": "strict"}`. Planning deterministically decomposes acceptance
+criteria and description statements, attaches ranked application-context
+nodes, assigns registered agents by portable roles, and persists versioned
+`execution-plan/v1` and `execution-plan-step/v1` contracts. Agent
+configurations use `agent-task/v1` and `agent-result/v1` adapter boundaries;
+external frameworks can implement those contracts without adding their SDKs to
+the runtime.
+
+Every plan includes durable risk and OPA-compatible policy decisions, a pending
+security-review gate with versioned findings, and approval requirements for
+application risk, privileged tools, schema changes, deployments, and
+security-sensitive work according to the selected policy pack. Planning gates
+can reference the existing durable `Approval` record when execution creates a
+run.
+
+Secret requirements must be explicit `secret-request/v1` objects in
+`TaskContractV1.metadata.secret_requests`, for example:
+
+```json
+{
+  "schema_version": "secret-request/v1",
+  "name": "deployment-token",
+  "purpose": "Authenticate the deployment tool",
+  "environment_variable": "DEPLOYMENT_TOKEN",
+  "required": true
+}
+```
+
+The environment broker performs exact-name availability checks and returns
+only opaque handles and non-secret metadata. Secret values are never written to
+database rows, events, logs, or API responses.
+
+### Run snapshots, restore, and replay
+
+SACM creates durable `run-snapshot/v1` checkpoints at safe run transitions and
+step boundaries. Each snapshot anchors the run and task identity, workflow
+version, run and step state, execution-plan/context summary, event sequence and
+hash, parent snapshot, creation reason, and a deterministic SHA-256 checksum.
+Manual creation with the same state and reason is idempotent.
+
+Authenticated snapshot and replay APIs are:
+
+```text
+GET  /v1/runs/{run_id}/snapshots
+POST /v1/runs/{run_id}/snapshots
+GET  /v1/runs/{run_id}/snapshots/{snapshot_id}
+POST /v1/runs/{run_id}/restore
+POST /v1/runs/{run_id}/replay
+GET  /v1/runs/{replay_run_id}/comparison
+```
+
+Restore is deliberately different from `POST /v1/runs/{run_id}/resume`.
+Ordinary resume only moves a failed run back to planning and retains its latest
+step state. Restore requires a failed run and a resumable selected checkpoint,
+validates its checksum and event-chain anchor, rejects changed step topology,
+and reinstates the captured run/step state before appending `SnapshotRestored`.
+
+Replay never changes the source run. It creates a new run and durable
+`run-replay/v1` link to the source run and snapshot. Requests may record
+`model`, `provider`, and `framework` overrides plus a replay reason. The
+`replay-comparison/v1` response reports both runs' status, steps, usage, cost,
+evidence, failures, and latest available output summary.
+
+### Requirement traceability and Evidence Pack 2.0
+
+SACM derives durable `requirement/v1` records from
+`TaskContractV1.acceptance_criteria` and previously recorded
+`bdd_requirement_registered` events. Requirement text is normalized and
+SHA-256 hashed; IDs are deterministic for the task and normalized content, so
+refreshing persisted data does not renumber unchanged requirements.
+
+Authenticated traceability APIs are:
+
+```text
+GET  /v1/tasks/{task_id}/requirements
+POST /v1/tasks/{task_id}/requirements/refresh
+GET  /v1/tasks/{task_id}/traceability
+POST /v1/tasks/{task_id}/traceability/refresh
+POST /v1/tasks/{task_id}/traceability/links
+```
+
+Refresh rebuilds derived `requirement-link/v1` records from durable application
+and execution plans, assigned agents, context/runtime events, run steps,
+repository audit events, commits, diff hashes, changed files, tests,
+verification, policy/security/approval decisions, artifacts, and evidence
+packs. External CI, review, or deployment systems can submit an explicit link
+with a requirement ID, target type and ID, relation, optional run ID, and
+non-secret metadata. External links are retained across derived refreshes.
+
+`traceability/v1` reports deterministic total, covered, evidence-covered, and
+per-target metrics plus the complete explicit list of uncovered requirements.
+Source-only BDD registration links do not count as implementation coverage.
+
+Evidence generation retains the existing `run-manifest/v2` fields and adds the
+backward-compatible Evidence Pack 2.0 sections: task contract/source and
+readiness, application graph hash/impact/risk, execution plan and portable
+agent assignment, policy/security/approvals, commands/tests/files/commits,
+usage/cost, snapshot/replay provenance, requirement links and coverage,
+artifact checksums, event-chain provenance, and integrity/signature metadata.
+Secret-like fields and configured secret values are redacted before any pack
+JSON or text artifact is written. Retrieve a checksum-verified manifest with:
+
+```text
+POST /v1/runs/{run_id}/evidence
+GET  /v1/runs/{run_id}/evidence
+GET  /v1/runs/{run_id}/evidence/{evidence_id}/manifest
+```
+
+### Outcome analytics dashboard
+
+SACM materializes deterministic `outcome-analytics/v1`,
+`step-outcome-analytics/v1`, and `agent-outcome-analytics/v1` rows from durable
+run state. Metrics include success/failure/cancelled outcomes, latency,
+retries, provider/model token usage and cost, requirement and evidence
+coverage, policy blocks, approvals, security findings, snapshot/replay source
+links, changed files, tests, verification, and recorded failures. Re-reading an
+unchanged run recomputes the same source fingerprint and does not duplicate
+rows or change their `computed_at` value.
+
+Authenticated analytics APIs are:
+
+```text
+GET /v1/runs/{run_id}/analytics
+GET /v1/analytics/tasks/{task_id}
+GET /v1/analytics/projects/{project_id}
+GET /v1/analytics/organizations/{organization_id}
+```
+
+Run analytics enforce the run's project membership. Project and organization
+aggregates require viewer access; task aggregates authorize every represented
+project. Production mode rejects legacy run/task analytics without tenancy.
+Historical data is not guessed: unavailable timings, usage, cost, coverage,
+policy, or security signals are returned as explicit `null` values with
+`data_state`, `legacy_data`, and per-source `data_completeness` indicators.
+Only persisted `agent_result` events become agent analytics; `system` and
+`user` runtime actors are never presented as agents.
+
+The dependency-free React/Vite dashboard in `apps/dashboard` consumes these
+APIs and the extended run context. It displays client/project/task and
+readiness metadata, clarifications, application impact/risk, planned and
+executed steps, portable agent assignments, policy/security/approvals,
+requirements and evidence coverage, cost and outcome metrics, failures,
+snapshots/replays/comparison, and project/organization rollups. Start it with:
+
+```bash
+cd apps/dashboard
+npm run dev
+```
+
+Set `VITE_SACM_API_URL` when the API is not available through `/api`.
 
 ## Quick start
 
@@ -145,6 +341,16 @@ Pass the repository path through the API or CLI when creating tasks.
 - `POST /memory/search`
 - `POST /memory/add`
 - `POST /router/route`
+- `GET /v1/runs/{run_id}/snapshots`
+- `POST /v1/runs/{run_id}/snapshots`
+- `POST /v1/runs/{run_id}/restore`
+- `POST /v1/runs/{run_id}/replay`
+- `GET /v1/runs/{replay_run_id}/comparison`
+- `GET /v1/tasks/{task_id}/requirements`
+- `GET /v1/tasks/{task_id}/traceability`
+- `POST /v1/tasks/{task_id}/traceability/links`
+- `POST /v1/runs/{run_id}/evidence`
+- `GET /v1/runs/{run_id}/evidence/{evidence_id}/manifest`
 - `POST /context/compile`
 - `POST /context/ingest`
 - `POST /repository/analyze`
@@ -168,6 +374,14 @@ Pass the repository path through the API or CLI when creating tasks.
 - `POST /v1/runs/{run_id}/steps/{step_id}/retry`
 - `GET /v1/runs/{run_id}/events`
 - `POST /v1/runs/{run_id}/evidence`
+- `POST /v1/tasks/{task_id}/application-context`
+- `GET /v1/tasks/{task_id}/application-context`
+- `GET /v1/tasks/{task_id}/application-context/impact-risk`
+- `POST /v1/tasks/{task_id}/execution-plan`
+- `GET /v1/tasks/{task_id}/execution-plan`
+- `GET /v1/tasks/{task_id}/execution-plan/policy`
+- `GET /v1/tasks/{task_id}/execution-plan/security-review`
+- `GET /v1/tasks/{task_id}/execution-plan/secret-requirements`
 
 ## Delivery integrations
 

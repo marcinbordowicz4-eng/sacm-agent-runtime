@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class TaskStatus:
@@ -45,9 +45,15 @@ ConnectorType = Literal["jira", "linear", "github", "azure_devops", "generic"]
 
 
 class RepositoryReference(BaseModel):
-    full_name: str | None = None
-    path: str | None = None
-    base_revision: str | None = None
+    full_name: str | None = Field(default=None, min_length=1, max_length=500)
+    path: str | None = Field(default=None, min_length=1, max_length=2000)
+    base_revision: str | None = Field(default=None, min_length=1, max_length=255)
+
+    @model_validator(mode="after")
+    def require_repository_identity(self) -> "RepositoryReference":
+        if self.full_name is None and self.path is None:
+            raise ValueError("Repository references require a path or full_name.")
+        return self
 
 
 class TaskContractV1(BaseModel):
@@ -55,10 +61,13 @@ class TaskContractV1(BaseModel):
     connector_type: ConnectorType
     external_id: str = Field(min_length=1, max_length=255)
     external_url: str | None = None
+    project_id: str | None = Field(default=None, min_length=1, max_length=255)
     title: str = Field(min_length=1, max_length=500)
     description: str = ""
     acceptance_criteria: list[str] = Field(default_factory=list)
-    repositories: list[RepositoryReference] = Field(default_factory=list)
+    repositories: list[RepositoryReference] = Field(
+        default_factory=list, max_length=20
+    )
     priority: str | None = None
     labels: list[str] = Field(default_factory=list)
     requested_by: str | None = None

@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from apps.api.task_access import authorize_contract, authorize_task
+from sacm.core.auth_service import require_authenticated_actor
 from sacm.core.task_intake_service import TaskIntakeService
 from sacm.infrastructure.db.models import TaskClarification
 from sacm.infrastructure.db.session import get_db
@@ -28,17 +30,29 @@ def _response(task, readiness, clarifications) -> TaskIntakeRead:
 
 @router.post("/tasks", response_model=TaskIntakeRead)
 def ingest_task(
-    payload: TaskContractV1, db: Session = Depends(get_db)
+    payload: TaskContractV1,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
 ) -> TaskIntakeRead:
-    return _response(*TaskIntakeService(db).ingest(payload))
+    authorize_contract(db, payload, actor)
+    result = TaskIntakeService(db).ingest(payload)
+    authorize_task(db, result[0].id, actor)
+    return _response(*result)
 
 
 @router.post("/jira/webhooks", response_model=TaskIntakeRead)
 def ingest_jira_webhook(
-    payload: JiraWebhook, db: Session = Depends(get_db)
+    payload: JiraWebhook,
+    project_id: str | None = None,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
 ) -> TaskIntakeRead:
     service = TaskIntakeService(db)
-    return _response(*service.ingest(service.from_jira(payload)))
+    contract = service.from_jira(payload, project_id)
+    authorize_contract(db, contract, actor)
+    result = service.ingest(contract)
+    authorize_task(db, result[0].id, actor)
+    return _response(*result)
 
 
 @router.get(
@@ -46,8 +60,11 @@ def ingest_jira_webhook(
     response_model=list[TaskClarificationRead],
 )
 def list_clarifications(
-    task_id: str, db: Session = Depends(get_db)
+    task_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
 ) -> list[TaskClarificationRead]:
+    authorize_task(db, task_id, actor)
     items = (
         db.query(TaskClarification)
         .filter(TaskClarification.task_id == task_id)
@@ -65,8 +82,10 @@ def answer_clarification(
     task_id: str,
     clarification_id: str,
     payload: ClarificationAnswer,
+    actor: str = Depends(require_authenticated_actor),
     db: Session = Depends(get_db),
 ) -> TaskIntakeRead:
+    authorize_task(db, task_id, actor, "developer")
     try:
         result = TaskIntakeService(db).answer(
             task_id, clarification_id, payload.answer

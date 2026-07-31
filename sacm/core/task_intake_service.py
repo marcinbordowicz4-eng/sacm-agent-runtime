@@ -46,7 +46,9 @@ class TaskIntakeService:
         )
 
     @staticmethod
-    def from_jira(payload: JiraWebhook) -> TaskContractV1:
+    def from_jira(
+        payload: JiraWebhook, project_id: str | None = None
+    ) -> TaskContractV1:
         fields = payload.issue.fields
         reporter = fields.reporter or {}
         priority = fields.priority or {}
@@ -54,6 +56,7 @@ class TaskIntakeService:
             connector_type="jira",
             external_id=payload.issue.key,
             external_url=payload.issue.self,
+            project_id=project_id,
             title=fields.summary,
             description=_jira_description_text(fields.description),
             priority=priority.get("name"),
@@ -126,6 +129,9 @@ class TaskIntakeService:
         )
         self.db.commit()
         self.db.refresh(task)
+        from sacm.core.traceability_service import TraceabilityService
+
+        TraceabilityService(self.db).refresh(task.id)
         return task, assessment, clarifications
 
     def answer(
@@ -176,6 +182,9 @@ class TaskIntakeService:
         )
         self.db.commit()
         self.db.refresh(task)
+        from sacm.core.traceability_service import TraceabilityService
+
+        TraceabilityService(self.db).refresh(task.id)
         return task, assessment, list(task.clarifications)
 
 

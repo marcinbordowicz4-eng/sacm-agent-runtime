@@ -61,6 +61,7 @@ class RunService:
             actor="system",
             payload={"task_id": task.id, "workflow_version": run.workflow_version},
         )
+        self._checkpoint(run, "run_created")
         self.db.commit()
         self.db.refresh(run)
         return run
@@ -115,6 +116,7 @@ class RunService:
             payload=payload or {},
             step_id=step_id,
         )
+        self._checkpoint(run, f"run_transition:{event_type}")
         self.db.commit()
         self.db.refresh(run)
         return run
@@ -174,6 +176,7 @@ class RunService:
             payload={"name": name, "idempotency_key": idempotency_key},
             step_id=step.id,
         )
+        self._checkpoint(run, f"step_scheduled:{step.id}")
         self.db.commit()
         self.db.refresh(step)
         return step
@@ -217,6 +220,7 @@ class RunService:
             payload={"name": step.name},
             step_id=step.id,
         )
+        self._checkpoint(run, f"step_completed:{step.id}")
         self.db.commit()
         self.db.refresh(step)
         return step
@@ -241,6 +245,7 @@ class RunService:
             payload={"name": step.name, "approval_id": output["sacm_approval_id"]},
             step_id=step.id,
         )
+        self._checkpoint(run, f"step_awaiting_approval:{step.id}")
         self.db.commit()
         self.db.refresh(step)
         return step
@@ -260,6 +265,7 @@ class RunService:
             payload={"name": step.name, "failure": failure},
             step_id=step.id,
         )
+        self._checkpoint(run, f"step_failed:{step.id}")
         self.db.commit()
         self.db.refresh(step)
         return step
@@ -293,6 +299,7 @@ class RunService:
             payload={"name": step.name, "retry_count": step.retry_count},
             step_id=step.id,
         )
+        self._checkpoint(run, f"step_retry_scheduled:{step.id}")
         self.db.commit()
         self.db.refresh(step)
         return step
@@ -376,6 +383,18 @@ class RunService:
         )
         self.db.add(event)
         return event
+
+    def _checkpoint(self, run: Run, reason: str) -> None:
+        """Persist a safe checkpoint when the snapshots migration is available."""
+        from sacm.core.snapshot_service import SnapshotService
+
+        snapshots = SnapshotService(self.db)
+        if not snapshots.available():
+            return
+        self.db.flush()
+        if any(step.status == "RUNNING" for step in self.list_steps(run.id)):
+            return
+        snapshots.create(run.id, reason)
 
     def _require(self, run_id: str) -> Run:
         run = self.get(run_id)

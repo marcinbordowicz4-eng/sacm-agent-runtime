@@ -6,8 +6,11 @@ from sqlalchemy import text
 
 from apps.api.routes import (
     agents,
+    analytics,
+    application_context,
     approvals,
     context,
+    execution_plan,
     github,
     intake,
     memory,
@@ -16,6 +19,7 @@ from apps.api.routes import (
     router,
     runs,
     tasks,
+    traceability,
 )
 from sacm.adapters.repository_adapter import RepositoryError, RepositoryPathError
 from sacm.core.auth_service import (
@@ -98,6 +102,30 @@ app.include_router(
     organizations.router,
     prefix="/v1/organizations",
     tags=["organizations"],
+    dependencies=authenticated_dependencies,
+)
+app.include_router(
+    application_context.router,
+    prefix="/v1",
+    tags=["application-context"],
+    dependencies=authenticated_dependencies,
+)
+app.include_router(
+    execution_plan.router,
+    prefix="/v1",
+    tags=["execution-planning"],
+    dependencies=authenticated_dependencies,
+)
+app.include_router(
+    traceability.router,
+    prefix="/v1",
+    tags=["traceability"],
+    dependencies=authenticated_dependencies,
+)
+app.include_router(
+    analytics.router,
+    prefix="/v1",
+    tags=["analytics"],
     dependencies=authenticated_dependencies,
 )
 

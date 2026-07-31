@@ -47,6 +47,9 @@ class RepositoryAuditService:
                 source_type="repository_operation",
                 importance=0.8,
             )
+        from sacm.core.traceability_service import TraceabilityService
+
+        TraceabilityService(self.db).refresh(task_id)
 
     @staticmethod
     def content_summary(content: str) -> dict[str, Any]:

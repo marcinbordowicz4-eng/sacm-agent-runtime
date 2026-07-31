@@ -58,6 +58,9 @@ class BddTraceabilityService:
             "requirement_hash": _sha256(task.description),
         }
         self.events.save(task.id, "bdd_requirement_registered", payload)
+        from sacm.core.traceability_service import TraceabilityService
+
+        TraceabilityService(self.db).refresh(task.id)
         return payload
 
     def analyze_git_impact(

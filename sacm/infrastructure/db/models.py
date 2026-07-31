@@ -74,6 +74,24 @@ class Task(Base):
         back_populates="task",
         cascade="all, delete-orphan",
     )
+    application_context: Mapped["ApplicationContext | None"] = relationship(
+        "ApplicationContext",
+        back_populates="task",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+    execution_plans: Mapped[list["ExecutionPlan"]] = relationship(
+        "ExecutionPlan",
+        back_populates="task",
+        cascade="all, delete-orphan",
+        order_by="ExecutionPlan.revision",
+    )
+    requirements: Mapped[list["Requirement"]] = relationship(
+        "Requirement",
+        back_populates="task",
+        cascade="all, delete-orphan",
+        order_by="Requirement.position",
+    )
 
 
 class TaskClarification(Base):
@@ -94,6 +112,426 @@ class TaskClarification(Base):
     answered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     task: Mapped["Task"] = relationship("Task", back_populates="clarifications")
+
+
+class Requirement(Base):
+    __tablename__ = "requirements"
+    __table_args__ = (
+        UniqueConstraint(
+            "task_id",
+            "stable_hash",
+            name="uq_requirements_task_stable_hash",
+        ),
+        UniqueConstraint(
+            "task_id",
+            "position",
+            name="uq_requirements_task_position",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        ForeignKey("tasks.id"), nullable=False, index=True
+    )
+    schema_version: Mapped[str] = mapped_column(
+        String, nullable=False, default="requirement/v1"
+    )
+    stable_hash: Mapped[str] = mapped_column(String, nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_text: Mapped[str] = mapped_column(Text, nullable=False)
+    source_refs: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    metadata_: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON, nullable=False, default=dict
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    task: Mapped["Task"] = relationship("Task", back_populates="requirements")
+    links: Mapped[list["RequirementLink"]] = relationship(
+        "RequirementLink",
+        back_populates="requirement",
+        cascade="all, delete-orphan",
+        order_by="RequirementLink.target_type, RequirementLink.target_id",
+    )
+
+
+class RequirementLink(Base):
+    __tablename__ = "requirement_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "requirement_id",
+            "target_type",
+            "target_id",
+            "relation",
+            name="uq_requirement_links_identity",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        ForeignKey("tasks.id"), nullable=False, index=True
+    )
+    requirement_id: Mapped[str] = mapped_column(
+        ForeignKey("requirements.id"), nullable=False, index=True
+    )
+    run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("runs.id"), nullable=True, index=True
+    )
+    schema_version: Mapped[str] = mapped_column(
+        String, nullable=False, default="requirement-link/v1"
+    )
+    target_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    target_id: Mapped[str] = mapped_column(String, nullable=False)
+    relation: Mapped[str] = mapped_column(String, nullable=False)
+    source: Mapped[str] = mapped_column(String, nullable=False, default="derived")
+    metadata_: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON, nullable=False, default=dict
+    )
+    created_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    requirement: Mapped["Requirement"] = relationship(
+        "Requirement", back_populates="links"
+    )
+    run: Mapped["Run | None"] = relationship("Run")
+
+
+class ApplicationContext(Base):
+    __tablename__ = "application_contexts"
+    __table_args__ = (
+        UniqueConstraint("task_id", name="uq_application_contexts_task_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    task_id: Mapped[str] = mapped_column(
+        ForeignKey("tasks.id"), nullable=False, index=True
+    )
+    schema_version: Mapped[str] = mapped_column(
+        String, nullable=False, default="application-context/v1"
+    )
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    scanner_version: Mapped[str] = mapped_column(
+        String, nullable=False, default="deterministic-scanner/v1"
+    )
+    graph: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    graph_hash: Mapped[str] = mapped_column(String, nullable=False)
+    impact_analysis: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    risk_analysis: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    task: Mapped["Task"] = relationship("Task", back_populates="application_context")
+    repositories: Mapped[list["ApplicationContextRepository"]] = relationship(
+        "ApplicationContextRepository",
+        back_populates="application_context",
+        cascade="all, delete-orphan",
+        order_by="ApplicationContextRepository.position",
+    )
+
+
+class ApplicationContextRepository(Base):
+    __tablename__ = "application_context_repositories"
+    __table_args__ = (
+        UniqueConstraint(
+            "application_context_id",
+            "position",
+            name="uq_application_context_repositories_position",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    application_context_id: Mapped[str] = mapped_column(
+        ForeignKey("application_contexts.id"), nullable=False, index=True
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    full_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    requested_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    resolved_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    base_revision: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    file_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    skipped_file_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    scan_metadata: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    application_context: Mapped["ApplicationContext"] = relationship(
+        "ApplicationContext", back_populates="repositories"
+    )
+
+
+class ExecutionPlan(Base):
+    __tablename__ = "execution_plans"
+    __table_args__ = (
+        UniqueConstraint(
+            "task_id", "revision", name="uq_execution_plans_task_revision"
+        ),
+        UniqueConstraint(
+            "task_id", "source_hash", name="uq_execution_plans_task_source"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    task_id: Mapped[str] = mapped_column(
+        ForeignKey("tasks.id"), nullable=False, index=True
+    )
+    application_context_id: Mapped[str] = mapped_column(
+        ForeignKey("application_contexts.id"), nullable=False, index=True
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    schema_version: Mapped[str] = mapped_column(
+        String, nullable=False, default="execution-plan/v1"
+    )
+    planner_version: Mapped[str] = mapped_column(
+        String, nullable=False, default="deterministic-planner/v1"
+    )
+    source_hash: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    policy_pack: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    task: Mapped["Task"] = relationship("Task", back_populates="execution_plans")
+    application_context: Mapped["ApplicationContext"] = relationship(
+        "ApplicationContext"
+    )
+    steps: Mapped[list["ExecutionPlanStep"]] = relationship(
+        "ExecutionPlanStep",
+        back_populates="execution_plan",
+        cascade="all, delete-orphan",
+        order_by="ExecutionPlanStep.sequence",
+    )
+    risk_decision: Mapped["ExecutionPlanRiskDecision"] = relationship(
+        "ExecutionPlanRiskDecision",
+        back_populates="execution_plan",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+    policy_decision: Mapped["ExecutionPlanPolicyDecision"] = relationship(
+        "ExecutionPlanPolicyDecision",
+        back_populates="execution_plan",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+    security_review: Mapped["ExecutionPlanSecurityReview"] = relationship(
+        "ExecutionPlanSecurityReview",
+        back_populates="execution_plan",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+    secret_requirements: Mapped[list["ExecutionPlanSecretRequirement"]] = relationship(
+        "ExecutionPlanSecretRequirement",
+        back_populates="execution_plan",
+        cascade="all, delete-orphan",
+        order_by="ExecutionPlanSecretRequirement.position",
+    )
+    approval_gates: Mapped[list["ExecutionPlanApprovalGate"]] = relationship(
+        "ExecutionPlanApprovalGate",
+        back_populates="execution_plan",
+        cascade="all, delete-orphan",
+        order_by="ExecutionPlanApprovalGate.position",
+    )
+
+
+class ExecutionPlanStep(Base):
+    __tablename__ = "execution_plan_steps"
+    __table_args__ = (
+        UniqueConstraint(
+            "execution_plan_id",
+            "sequence",
+            name="uq_execution_plan_steps_sequence",
+        ),
+        UniqueConstraint(
+            "execution_plan_id",
+            "stable_key",
+            name="uq_execution_plan_steps_stable_key",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    execution_plan_id: Mapped[str] = mapped_column(
+        ForeignKey("execution_plans.id"), nullable=False, index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    stable_key: Mapped[str] = mapped_column(String, nullable=False)
+    schema_version: Mapped[str] = mapped_column(
+        String, nullable=False, default="execution-plan-step/v1"
+    )
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    objective: Mapped[str] = mapped_column(Text, nullable=False)
+    acceptance_criteria: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    context_references: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    impacted_node_ids: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    required_tools: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    risk_tags: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    depends_on: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    assigned_agent_name: Mapped[str] = mapped_column(String, nullable=False)
+    assigned_agent_role: Mapped[str] = mapped_column(String, nullable=False)
+    agent_configuration: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+
+    execution_plan: Mapped["ExecutionPlan"] = relationship(
+        "ExecutionPlan", back_populates="steps"
+    )
+
+
+class ExecutionPlanRiskDecision(Base):
+    __tablename__ = "execution_plan_risk_decisions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    execution_plan_id: Mapped[str] = mapped_column(
+        ForeignKey("execution_plans.id"), nullable=False, unique=True, index=True
+    )
+    schema_version: Mapped[str] = mapped_column(
+        String, nullable=False, default="risk-decision/v1"
+    )
+    decision: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    execution_plan: Mapped["ExecutionPlan"] = relationship(
+        "ExecutionPlan", back_populates="risk_decision"
+    )
+
+
+class ExecutionPlanPolicyDecision(Base):
+    __tablename__ = "execution_plan_policy_decisions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    execution_plan_id: Mapped[str] = mapped_column(
+        ForeignKey("execution_plans.id"), nullable=False, unique=True, index=True
+    )
+    schema_version: Mapped[str] = mapped_column(
+        String, nullable=False, default="policy-decision/v1"
+    )
+    policy_pack: Mapped[str] = mapped_column(String, nullable=False)
+    decision: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    execution_plan: Mapped["ExecutionPlan"] = relationship(
+        "ExecutionPlan", back_populates="policy_decision"
+    )
+
+
+class ExecutionPlanSecurityReview(Base):
+    __tablename__ = "execution_plan_security_reviews"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    execution_plan_id: Mapped[str] = mapped_column(
+        ForeignKey("execution_plans.id"), nullable=False, unique=True, index=True
+    )
+    schema_version: Mapped[str] = mapped_column(
+        String, nullable=False, default="security-review/v1"
+    )
+    required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="PENDING")
+    reviewer_configuration: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False
+    )
+    findings: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    execution_plan: Mapped["ExecutionPlan"] = relationship(
+        "ExecutionPlan", back_populates="security_review"
+    )
+
+
+class ExecutionPlanSecretRequirement(Base):
+    __tablename__ = "execution_plan_secret_requirements"
+    __table_args__ = (
+        UniqueConstraint(
+            "execution_plan_id",
+            "position",
+            name="uq_execution_plan_secret_requirements_position",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    execution_plan_id: Mapped[str] = mapped_column(
+        ForeignKey("execution_plans.id"), nullable=False, index=True
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    schema_version: Mapped[str] = mapped_column(
+        String, nullable=False, default="secret-request/v1"
+    )
+    request: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    reference: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    execution_plan: Mapped["ExecutionPlan"] = relationship(
+        "ExecutionPlan", back_populates="secret_requirements"
+    )
+
+
+class ExecutionPlanApprovalGate(Base):
+    __tablename__ = "execution_plan_approval_gates"
+    __table_args__ = (
+        UniqueConstraint(
+            "execution_plan_id",
+            "position",
+            name="uq_execution_plan_approval_gates_position",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    execution_plan_id: Mapped[str] = mapped_column(
+        ForeignKey("execution_plans.id"), nullable=False, index=True
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    schema_version: Mapped[str] = mapped_column(
+        String, nullable=False, default="approval-gate/v1"
+    )
+    gate_type: Mapped[str] = mapped_column(String, nullable=False)
+    action: Mapped[str] = mapped_column(String, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="PENDING")
+    step_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    approval_id: Mapped[str | None] = mapped_column(
+        ForeignKey("approvals.id"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    execution_plan: Mapped["ExecutionPlan"] = relationship(
+        "ExecutionPlan", back_populates="approval_gates"
+    )
+    approval: Mapped["Approval | None"] = relationship("Approval")
 
 
 class Organization(Base):
@@ -266,6 +704,40 @@ class Run(Base):
     webhook_deliveries: Mapped[list["GitHubWebhookDelivery"]] = relationship(
         "GitHubWebhookDelivery", back_populates="run", cascade="all, delete-orphan"
     )
+    snapshots: Mapped[list["RunSnapshot"]] = relationship(
+        "RunSnapshot",
+        back_populates="run",
+        cascade="all, delete-orphan",
+        foreign_keys="RunSnapshot.run_id",
+        order_by="RunSnapshot.created_at",
+    )
+    replay_source_links: Mapped[list["RunReplay"]] = relationship(
+        "RunReplay",
+        back_populates="source_run",
+        foreign_keys="RunReplay.source_run_id",
+    )
+    replay_link: Mapped["RunReplay | None"] = relationship(
+        "RunReplay",
+        back_populates="replay_run",
+        foreign_keys="RunReplay.replay_run_id",
+        uselist=False,
+    )
+    analytics: Mapped["RunOutcomeAnalytics | None"] = relationship(
+        "RunOutcomeAnalytics",
+        back_populates="run",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+    step_analytics: Mapped[list["RunStepOutcomeAnalytics"]] = relationship(
+        "RunStepOutcomeAnalytics",
+        back_populates="run",
+        cascade="all, delete-orphan",
+    )
+    agent_analytics: Mapped[list["AgentOutcomeAnalytics"]] = relationship(
+        "AgentOutcomeAnalytics",
+        back_populates="run",
+        cascade="all, delete-orphan",
+    )
 
 
 class RunStep(Base):
@@ -313,6 +785,84 @@ class RuntimeEvent(Base):
     run: Mapped["Run"] = relationship("Run", back_populates="events")
 
 
+class RunSnapshot(Base):
+    __tablename__ = "run_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id",
+            "checksum",
+            name="uq_run_snapshots_run_checksum",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    schema_version: Mapped[str] = mapped_column(
+        String, nullable=False, default="run-snapshot/v1"
+    )
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id"), nullable=False, index=True
+    )
+    task_id: Mapped[str] = mapped_column(
+        ForeignKey("tasks.id"), nullable=False, index=True
+    )
+    event_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_hash: Mapped[str] = mapped_column(String, nullable=False)
+    workflow_version: Mapped[str] = mapped_column(String, nullable=False)
+    run_state: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    step_state: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    execution_plan_summary: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON, nullable=True
+    )
+    context_summary: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    checksum: Mapped[str] = mapped_column(String, nullable=False)
+    parent_snapshot_id: Mapped[str | None] = mapped_column(
+        ForeignKey("run_snapshots.id"), nullable=True, index=True
+    )
+    creation_reason: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    run: Mapped["Run"] = relationship(
+        "Run", back_populates="snapshots", foreign_keys=[run_id]
+    )
+    task: Mapped["Task"] = relationship("Task")
+    parent: Mapped["RunSnapshot | None"] = relationship(
+        "RunSnapshot", remote_side=[id], foreign_keys=[parent_snapshot_id]
+    )
+
+
+class RunReplay(Base):
+    __tablename__ = "run_replays"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    schema_version: Mapped[str] = mapped_column(
+        String, nullable=False, default="run-replay/v1"
+    )
+    source_run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id"), nullable=False, index=True
+    )
+    source_snapshot_id: Mapped[str] = mapped_column(
+        ForeignKey("run_snapshots.id"), nullable=False, index=True
+    )
+    replay_run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id"), nullable=False, unique=True, index=True
+    )
+    overrides: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    replay_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    source_run: Mapped["Run"] = relationship(
+        "Run",
+        back_populates="replay_source_links",
+        foreign_keys=[source_run_id],
+    )
+    replay_run: Mapped["Run"] = relationship(
+        "Run", back_populates="replay_link", foreign_keys=[replay_run_id]
+    )
+    source_snapshot: Mapped["RunSnapshot"] = relationship("RunSnapshot")
+
+
 class EvidencePack(Base):
     __tablename__ = "evidence_packs"
 
@@ -339,6 +889,202 @@ class Approval(Base):
     decision_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     run: Mapped["Run"] = relationship("Run", back_populates="approvals")
+
+
+class RunOutcomeAnalytics(Base):
+    __tablename__ = "run_outcome_analytics"
+    __table_args__ = (
+        UniqueConstraint("run_id", name="uq_run_outcome_analytics_run"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id"), nullable=False, index=True
+    )
+    task_id: Mapped[str] = mapped_column(
+        ForeignKey("tasks.id"), nullable=False, index=True
+    )
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey("projects.id"), nullable=True, index=True
+    )
+    schema_version: Mapped[str] = mapped_column(
+        String, nullable=False, default="outcome-analytics/v1"
+    )
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    outcome: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    estimated_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cost_estimation_available: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    evidence_pack_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    evidence_coverage_percent: Mapped[float | None] = mapped_column(
+        Float, nullable=True
+    )
+    requirement_coverage_percent: Mapped[float | None] = mapped_column(
+        Float, nullable=True
+    )
+    policy_blocked: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    approval_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pending_approval_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    approved_approval_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    rejected_approval_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    security_finding_count: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    open_security_finding_count: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    high_critical_security_finding_count: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    source_run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_snapshot_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    replay_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    changed_file_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    test_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    verification_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    step_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    agent_invocation_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    legacy_data: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    data_completeness: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    details: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    source_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    run: Mapped["Run"] = relationship("Run", back_populates="analytics")
+
+
+class RunStepOutcomeAnalytics(Base):
+    __tablename__ = "run_step_outcome_analytics"
+    __table_args__ = (
+        UniqueConstraint("step_id", name="uq_run_step_outcome_analytics_step"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id"), nullable=False, index=True
+    )
+    step_id: Mapped[str] = mapped_column(
+        ForeignKey("run_steps.id"), nullable=False, index=True
+    )
+    schema_version: Mapped[str] = mapped_column(
+        String, nullable=False, default="step-outcome-analytics/v1"
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    outcome: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    agent_name: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    provider: Mapped[str | None] = mapped_column(String, nullable=True)
+    model_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    framework: Mapped[str | None] = mapped_column(String, nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    estimated_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    evidence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    requirement_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    changed_file_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    test_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    verification_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    failure: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    details: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    source_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    run: Mapped["Run"] = relationship("Run", back_populates="step_analytics")
+    step: Mapped["RunStep"] = relationship("RunStep")
+
+
+class AgentOutcomeAnalytics(Base):
+    __tablename__ = "agent_outcome_analytics"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_event_id",
+            name="uq_agent_outcome_analytics_source_event",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id"), nullable=False, index=True
+    )
+    step_id: Mapped[str | None] = mapped_column(
+        ForeignKey("run_steps.id"), nullable=True, index=True
+    )
+    source_event_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    schema_version: Mapped[str] = mapped_column(
+        String, nullable=False, default="agent-outcome-analytics/v1"
+    )
+    agent_name: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    role: Mapped[str | None] = mapped_column(String, nullable=True)
+    provider: Mapped[str | None] = mapped_column(String, nullable=True)
+    model_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    framework: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str | None] = mapped_column(String, nullable=True)
+    outcome: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    estimated_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    evidence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    requirement_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    security_finding_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    changed_file_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    test_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    verification_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    failure: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    details: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    legacy_attribution: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    source_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    run: Mapped["Run"] = relationship("Run", back_populates="agent_analytics")
+    step: Mapped["RunStep | None"] = relationship("RunStep")
 
 
 class GitHubWebhookDelivery(Base):

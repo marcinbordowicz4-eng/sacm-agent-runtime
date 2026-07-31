@@ -11,6 +11,7 @@ from sacm.core.evidence_service import EvidenceService
 from sacm.core.external_agent_service import ExternalAgentService
 from sacm.core.run_context_service import RunContextService
 from sacm.core.run_service import RunService
+from sacm.core.snapshot_service import SnapshotService
 from sacm.core.tenancy_service import AuthorizationError, Role, TenancyService
 from sacm.core.workflow_backend import workflow_backend
 from sacm.infrastructure.db.models import EvidencePack, Membership, Project, Run
@@ -20,6 +21,15 @@ from sacm.schemas.contracts import (
     ExternalAgentStepCreate,
 )
 from sacm.schemas.run import RunCreate, RunRead, RunStepRead
+from sacm.schemas.snapshot import (
+    ReplayComparisonV1,
+    ReplayCreatedV1,
+    RunSnapshotV1,
+    SnapshotCreateV1,
+    SnapshotReplayV1,
+    SnapshotRestoreResultV1,
+    SnapshotRestoreV1,
+)
 
 router = APIRouter()
 
@@ -137,6 +147,132 @@ def list_steps(
     service = RunService(db)
     _authorize_run(db, run_id, actor)
     return [RunStepRead.model_validate(step) for step in service.list_steps(run_id)]
+
+
+@router.get("/{run_id}/snapshots", response_model=list[RunSnapshotV1])
+def list_snapshots(
+    run_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> list[RunSnapshotV1]:
+    _authorize_run(db, run_id, actor)
+    return [
+        RunSnapshotV1.model_validate(snapshot)
+        for snapshot in SnapshotService(db).list_snapshots(run_id)
+    ]
+
+
+@router.post(
+    "/{run_id}/snapshots",
+    response_model=RunSnapshotV1,
+    status_code=201,
+)
+def create_snapshot(
+    run_id: str,
+    payload: SnapshotCreateV1,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> RunSnapshotV1:
+    _authorize_run(db, run_id, actor)
+    try:
+        snapshot = SnapshotService(db).create(run_id, payload.reason)
+        db.commit()
+        db.refresh(snapshot)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return RunSnapshotV1.model_validate(snapshot)
+
+
+@router.get(
+    "/{run_id}/snapshots/{snapshot_id}",
+    response_model=RunSnapshotV1,
+)
+def get_snapshot(
+    run_id: str,
+    snapshot_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> RunSnapshotV1:
+    _authorize_run(db, run_id, actor)
+    snapshot = SnapshotService(db).get(run_id, snapshot_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    return RunSnapshotV1.model_validate(snapshot)
+
+
+@router.post(
+    "/{run_id}/restore",
+    response_model=SnapshotRestoreResultV1,
+)
+def restore_snapshot(
+    run_id: str,
+    payload: SnapshotRestoreV1,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> SnapshotRestoreResultV1:
+    _authorize_run(db, run_id, actor)
+    try:
+        run, restored_step_ids = SnapshotService(db).restore(
+            run_id, payload.snapshot_id, payload.reason
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return SnapshotRestoreResultV1(
+        run_id=run.id,
+        snapshot_id=payload.snapshot_id,
+        status=run.status,
+        restored_step_ids=restored_step_ids,
+    )
+
+
+@router.post(
+    "/{run_id}/replay",
+    response_model=ReplayCreatedV1,
+    status_code=201,
+)
+def replay_snapshot(
+    run_id: str,
+    payload: SnapshotReplayV1,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> ReplayCreatedV1:
+    _authorize_run(db, run_id, actor)
+    try:
+        replay = SnapshotService(db).replay(
+            run_id,
+            payload.snapshot_id,
+            payload.reason,
+            payload.overrides.model_dump(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return ReplayCreatedV1(
+        replay_id=replay.id,
+        source_run_id=replay.source_run_id,
+        source_snapshot_id=replay.source_snapshot_id,
+        replay_run_id=replay.replay_run_id,
+        replay_reason=replay.replay_reason,
+        overrides=replay.overrides,
+        created_at=replay.created_at,
+    )
+
+
+@router.get(
+    "/{run_id}/comparison",
+    response_model=ReplayComparisonV1,
+)
+def replay_comparison(
+    run_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> ReplayComparisonV1:
+    _authorize_run(db, run_id, actor)
+    try:
+        return ReplayComparisonV1.model_validate(
+            SnapshotService(db).comparison(run_id)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/{run_id}/agent-steps", status_code=201)
@@ -313,3 +449,17 @@ def list_evidence(
         }
         for pack in packs
     ]
+
+
+@router.get("/{run_id}/evidence/{evidence_id}/manifest")
+def get_evidence_manifest(
+    run_id: str,
+    evidence_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> dict:
+    _authorize_run(db, run_id, actor)
+    try:
+        return EvidenceService(db).manifest(run_id, evidence_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
