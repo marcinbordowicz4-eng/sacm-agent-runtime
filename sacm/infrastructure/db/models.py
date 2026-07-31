@@ -129,6 +129,155 @@ class TaskClarification(Base):
     task: Mapped["Task"] = relationship("Task", back_populates="clarifications")
 
 
+class JiraConnector(Base):
+    __tablename__ = "jira_connectors"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "jira_project_key",
+            name="uq_jira_connectors_organization_project",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    organization_id: Mapped[str] = mapped_column(
+        ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id"), nullable=False, index=True
+    )
+    base_url: Mapped[str] = mapped_column(String, nullable=False)
+    jira_project_key: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    username: Mapped[str] = mapped_column(String, nullable=False)
+    api_token_ref: Mapped[str] = mapped_column(String, nullable=False)
+    webhook_secret_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    field_mapping: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    status_mapping: Mapped[dict[str, str]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    timeout_seconds: Mapped[float] = mapped_column(Float, nullable=False, default=10.0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class JiraWebhookDelivery(Base):
+    __tablename__ = "jira_webhook_deliveries"
+    __table_args__ = (
+        UniqueConstraint(
+            "connector_id",
+            "delivery_id",
+            name="uq_jira_webhook_delivery",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    connector_id: Mapped[str] = mapped_column(
+        ForeignKey("jira_connectors.id"), nullable=False, index=True
+    )
+    organization_id: Mapped[str] = mapped_column(
+        ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id"), nullable=False, index=True
+    )
+    delivery_id: Mapped[str] = mapped_column(String, nullable=False)
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String, nullable=False)
+    task_id: Mapped[str | None] = mapped_column(
+        ForeignKey("tasks.id"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String, nullable=False, default="RECEIVED")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class JiraConnectorOperation(Base):
+    __tablename__ = "jira_connector_operations"
+    __table_args__ = (
+        UniqueConstraint(
+            "connector_id",
+            "idempotency_key",
+            name="uq_jira_connector_operation",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    connector_id: Mapped[str] = mapped_column(
+        ForeignKey("jira_connectors.id"), nullable=False, index=True
+    )
+    organization_id: Mapped[str] = mapped_column(
+        ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id"), nullable=False, index=True
+    )
+    task_id: Mapped[str | None] = mapped_column(
+        ForeignKey("tasks.id"), nullable=True, index=True
+    )
+    run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("runs.id"), nullable=True, index=True
+    )
+    operation_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="PENDING")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    external_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class JiraDeliveryState(Base):
+    __tablename__ = "jira_delivery_states"
+    __table_args__ = (
+        UniqueConstraint("task_id", name="uq_jira_delivery_states_task"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    connector_id: Mapped[str] = mapped_column(
+        ForeignKey("jira_connectors.id"), nullable=False, index=True
+    )
+    organization_id: Mapped[str] = mapped_column(
+        ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id"), nullable=False, index=True
+    )
+    task_id: Mapped[str] = mapped_column(
+        ForeignKey("tasks.id"), nullable=False, index=True
+    )
+    run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("runs.id"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="INGESTED", index=True
+    )
+    jira_status: Mapped[str | None] = mapped_column(String, nullable=True)
+    status_comment_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    pr_status: Mapped[str] = mapped_column(
+        String, nullable=False, default="PR_NOT_CONFIGURED"
+    )
+    pr_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    context: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
 class Requirement(Base):
     __tablename__ = "requirements"
     __table_args__ = (

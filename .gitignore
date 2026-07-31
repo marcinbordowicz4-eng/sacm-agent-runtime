@@ -12,5 +12,25 @@ worktrees/
 .ruff_cache/
 .pytest_cache/
 .idea/
+.playwright-mcp/
+.sacm/
 secrets/
 production.env
+
+# Generated Benchmark 100 fixtures, private runner inputs, and run evidence.
+benchmark-work/
+benchmark-work-*/
+benchmarks/generated/
+benchmarks/fixtures/
+benchmarks/results/
+benchmarks/reports/
+benchmarks/**/*.result.json
+benchmarks/**/*-result.json
+benchmarks/**/*-report.json
+.benchmark-agent-result.json
+
+# Generated release evidence and local packaging output.
+security-release-evidence/
+release-artifacts/
+release-evidence.zip
+.release-tmp/

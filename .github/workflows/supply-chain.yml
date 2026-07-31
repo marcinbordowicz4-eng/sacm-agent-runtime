@@ -1,4 +1,4 @@
-name: Enterprise supply chain
+name: Security release gate
 
 on:
   pull_request:
@@ -11,87 +11,378 @@ permissions:
 
 jobs:
   evidence:
+    name: Collect supply-chain evidence
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Create artifact directory
+        run: mkdir -p security-release-evidence
 
       - name: Build production image
+        id: image
+        continue-on-error: true
         run: |
           docker build \
             --build-arg VERSION="${GITHUB_REF_NAME}" \
             --build-arg VCS_REF="${GITHUB_SHA}" \
             --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --tag sacm-agent-runtime:supply-chain .
-
-      - name: Create artifact directory
-        run: mkdir -p supply-chain-artifacts
+            --tag sacm-agent-runtime:security-release .
 
       - name: Generate SPDX SBOM
-        uses: anchore/sbom-action@v0
+        if: always()
+        continue-on-error: true
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          image: sacm-agent-runtime:supply-chain
+          image: sacm-agent-runtime:security-release
           format: spdx-json
-          output-file: supply-chain-artifacts/sbom.spdx.json
+          output-file: security-release-evidence/sbom.spdx.json
           upload-artifact: false
 
-      - name: Dependency scan
+      - name: Dependency scan (blocking configuration)
+        if: always()
+        continue-on-error: true
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
           scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
           format: json
-          output: supply-chain-artifacts/dependency-scan.json
+          output: security-release-evidence/dependency-scan.json
+          exit-code: "1"
+
+      - name: Dependency scan SARIF
+        if: always()
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          format: sarif
+          output: security-release-evidence/dependency-scan.sarif
           exit-code: "0"
 
-      - name: Secret scan
+      - name: Secret scan (blocking configuration)
+        if: always()
+        continue-on-error: true
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
           scanners: secret
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
           format: json
-          output: supply-chain-artifacts/secret-scan.json
+          output: security-release-evidence/secret-scan.json
+          exit-code: "1"
+
+      - name: Secret scan SARIF
+        if: always()
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: secret
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          format: sarif
+          output: security-release-evidence/secret-scan.sarif
           exit-code: "0"
 
-      - name: IaC scan
+      - name: IaC scan (blocking configuration)
+        if: always()
+        continue-on-error: true
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: config
           scan-ref: .
+          severity: HIGH,CRITICAL
           format: json
-          output: supply-chain-artifacts/iac-scan.json
-          exit-code: "0"
+          output: security-release-evidence/iac-scan.json
+          exit-code: "1"
 
-      - name: Container scan
+      - name: IaC scan SARIF
+        if: always()
+        continue-on-error: true
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: sacm-agent-runtime:supply-chain
-          format: json
-          output: supply-chain-artifacts/container-scan.json
+          scan-type: config
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: security-release-evidence/iac-scan.sarif
           exit-code: "0"
 
-      - name: Generate canonical provenance
+      - name: Container scan (blocking configuration)
+        if: always()
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: sacm-agent-runtime:security-release
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          format: json
+          output: security-release-evidence/container-scan.json
+          exit-code: "1"
+
+      - name: Container scan SARIF
+        if: always()
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: sacm-agent-runtime:security-release
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          format: sarif
+          output: security-release-evidence/container-scan.sarif
+          exit-code: "0"
+
+      - name: Sanitize secret evidence
+        if: always()
+        continue-on-error: true
         run: |
-          image_digest="$(docker image inspect \
-            --format '{{index .RepoDigests 0}}' sacm-agent-runtime:supply-chain 2>/dev/null \
-            | sed 's/.*@//' || true)"
-          if [ -z "$image_digest" ]; then
-            image_digest="$(docker image inspect \
-              --format '{{.Id}}' sacm-agent-runtime:supply-chain)"
+          if ! python scripts/sanitize-security-evidence.py \
+              security-release-evidence/secret-scan.json \
+              security-release-evidence/secret-scan.sarif; then
+            rm -f security-release-evidence/secret-scan.json
+            rm -f security-release-evidence/secret-scan.sarif
+            exit 1
           fi
+
+      - name: Generate canonical provenance
+        if: always()
+        continue-on-error: true
+        run: |
+          image_digest="$(docker image inspect --format '{{.Id}}' \
+            sacm-agent-runtime:security-release)"
           python scripts/generate-ci-provenance.py \
             --repository "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
             --revision "${GITHUB_SHA}" \
-            --image "${GITHUB_REPOSITORY}:supply-chain" \
+            --image "${GITHUB_REPOSITORY}:security-release" \
             --image-digest "${image_digest}" \
-            --sbom supply-chain-artifacts/sbom.spdx.json \
-            --output supply-chain-artifacts/provenance.intoto.jsonl
+            --sbom security-release-evidence/sbom.spdx.json \
+            --output security-release-evidence/provenance.intoto.jsonl
 
-      - name: Upload supply-chain evidence
-        uses: actions/upload-artifact@v4
+      - name: Sign provenance
+        if: always()
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+          key = Ed25519PrivateKey.generate()
+          Path("security-release-provenance-key.pem").write_bytes(
+              key.private_bytes(
+                  serialization.Encoding.PEM,
+                  serialization.PrivateFormat.PKCS8,
+                  serialization.NoEncryption(),
+              )
+          )
+          PY
+          python scripts/supply-chain-attestation.py generate \
+            --subject security-release-evidence/sbom.spdx.json \
+            --name sbom.spdx.json \
+            --predicate security-release-evidence/provenance.intoto.jsonl \
+            --predicate-type https://sacm.dev/ci-provenance/v1 \
+            --key security-release-provenance-key.pem \
+            --key-id "github-actions-${GITHUB_RUN_ID}" \
+            --output security-release-evidence/provenance.signed.json
+          rm security-release-provenance-key.pem
+
+      - name: Record tool versions
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          import platform
+          import subprocess
+          from pathlib import Path
+
+          def version(command):
+              try:
+                  result = subprocess.run(
+                      command, capture_output=True, text=True, check=False
+                  )
+              except FileNotFoundError:
+                  return None
+              lines = (result.stdout or result.stderr).strip().splitlines()
+              return lines[0] if lines else None
+
+          Path("security-release-evidence/tool-versions.json").write_text(
+              json.dumps(
+                  {
+                      "python": platform.python_version(),
+                      "docker": version(["docker", "--version"]),
+                      "trivy": version(["trivy", "--version"]),
+                      "syft": version(["syft", "version"]),
+                      "trivy_action": "ed142fd0673e97e23eac54620cfb913e5ce36c25",
+                      "sbom_action": "e22c389904149dbc22b58101806040fa8d37a610",
+                  },
+                  sort_keys=True,
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload collected evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: supply-chain-${{ github.sha }}
-          path: supply-chain-artifacts/
-          if-no-files-found: error
+          name: security-release-evidence-${{ github.sha }}
+          path: security-release-evidence/
+          if-no-files-found: warn
           retention-days: 30
+
+  codeql:
+    name: CodeQL security analysis
+    uses: ./.github/workflows/codeql.yml
+    permissions:
+      contents: read
+      security-events: write
+
+  security-gate:
+    name: Blocking release security gate
+    needs: [evidence, codeql]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+
+      - name: Download collected evidence
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: security-release-evidence-${{ github.sha }}
+          path: security-release-evidence
+
+      - name: Record CodeQL status metadata
+        if: always()
+        env:
+          CODEQL_RESULT: ${{ needs.codeql.result }}
+        run: |
+          mkdir -p security-release-evidence
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          Path("security-release-evidence/codeql-status.json").write_text(
+              json.dumps(
+                  {
+                      "conclusion": os.environ["CODEQL_RESULT"],
+                      "git_sha": os.environ["GITHUB_SHA"],
+                      "workflow": "codeql.yml",
+                      "run_id": os.environ["GITHUB_RUN_ID"],
+                  },
+                  sort_keys=True,
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Run deterministic adversarial suite
+        id: adversarial
+        continue-on-error: true
+        run: |
+          pytest -q -m security_release_gate \
+            --junitxml=security-release-evidence/security-tests.xml
+
+      - name: Evaluate release security policy
+        id: evaluate
+        continue-on-error: true
+        run: |
+          python scripts/security-release-gate.py evaluate \
+            --policy config/release-security-policy.v1.json \
+            --artifacts security-release-evidence \
+            --junit security-release-evidence/security-tests.xml \
+            --git-sha "${GITHUB_SHA}" \
+            --output security-release-evidence/release-security-report.json
+
+      - name: Sign release security report
+        id: sign
+        if: always()
+        continue-on-error: true
+        run: |
+          test -f security-release-evidence/release-security-report.json
+          python - <<'PY'
+          from pathlib import Path
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+          key = Ed25519PrivateKey.generate()
+          Path("security-release-report-key.pem").write_bytes(
+              key.private_bytes(
+                  serialization.Encoding.PEM,
+                  serialization.PrivateFormat.PKCS8,
+                  serialization.NoEncryption(),
+              )
+          )
+          PY
+          python scripts/security-release-gate.py sign-report \
+            --report security-release-evidence/release-security-report.json \
+            --key security-release-report-key.pem \
+            --key-id "github-actions-${GITHUB_RUN_ID}" \
+            --output security-release-evidence/release-security-report.signed.json
+          rm security-release-report-key.pem
+
+      - name: Verify signed release security report
+        id: verify
+        if: always()
+        continue-on-error: true
+        run: |
+          python scripts/security-release-gate.py verify-report \
+            --signed-report \
+            security-release-evidence/release-security-report.signed.json
+
+      - name: Upload gate report and evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: security-release-report-${{ github.sha }}
+          path: security-release-evidence/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Enforce gate result
+        if: always()
+        env:
+          ADVERSARIAL_OUTCOME: ${{ steps.adversarial.outcome }}
+          EVALUATE_OUTCOME: ${{ steps.evaluate.outcome }}
+          SIGN_OUTCOME: ${{ steps.sign.outcome }}
+          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
+        run: |
+          test "${ADVERSARIAL_OUTCOME}" = "success"
+          test "${EVALUATE_OUTCOME}" = "success"
+          test "${SIGN_OUTCOME}" = "success"
+          test "${VERIFY_OUTCOME}" = "success"
+
+  release-attestation:
+    name: Attest passing release security report
+    needs: security-gate
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: security-release-report-${{ github.sha }}
+          path: security-release-evidence
+      - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: security-release-evidence/release-security-report.signed.json

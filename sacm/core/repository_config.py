@@ -4,6 +4,18 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+_UNTRUSTED_INSTRUCTION_PATTERNS = (
+    "ignore previous",
+    "ignore system",
+    "override policy",
+    "disable policy",
+    "read secret",
+    "reveal secret",
+    "exfiltrate",
+    "private key",
+    ".env",
+)
+
 
 class RepositoryConfigError(ValueError):
     """Raised when a repository's SACM configuration is unsafe or invalid."""
@@ -39,6 +51,19 @@ class RepositoryRuntimeConfig(BaseModel):
     repository: RepositorySettings = Field(default_factory=RepositorySettings)
     commands: CommandSettings = Field(default_factory=CommandSettings)
     constraints: list[str] = Field(default_factory=list)
+
+    @field_validator("constraints")
+    @classmethod
+    def validate_constraints(cls, values: list[str]) -> list[str]:
+        for value in values:
+            normalized = " ".join(value.lower().split())
+            if not normalized or "\x00" in value:
+                raise ValueError("Repository constraints must be non-empty text.")
+            if any(pattern in normalized for pattern in _UNTRUSTED_INSTRUCTION_PATTERNS):
+                raise ValueError(
+                    "Repository constraints cannot override policy or request secrets."
+                )
+        return values
 
 
 def load_repository_config(repository_path: str | None) -> RepositoryRuntimeConfig | None:

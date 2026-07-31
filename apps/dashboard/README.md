@@ -1,32 +1,42 @@
-# React + TypeScript + Vite
+# SACM Mission Control
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Dependency-free React/Vite enterprise UI for the SACM control plane.
 
-Currently, two official plugins are available:
+## Views
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- **Command Center** — authorized outcome, cost, coverage, policy/security,
+  executor-capacity, SLO, backup and audit signals. Missing and legacy values
+  are explicit; `SUCCESS` is labeled as an accepted proxy, not human acceptance.
+- **Missions** — Jira/task source, Definition of Ready and clarifications,
+  risk-based autonomy, plans, agents/models/frameworks, approvals, execution
+  jobs, Change Journey events, verification, snapshots/replay and cost.
+- **Applications** — accessible grouped application graph with impacted nodes
+  and an edge list; no graph-rendering dependency.
+- **Agents / Benchmarks** — persisted agent outcomes, sample sufficiency and
+  explicit `NOT_RUN` benchmark states without invented scores.
+- **Policies / Security** — suggested, approval-required and blocked decisions
+  with recorded reasons, findings and supply-chain status.
+- **Evidence & Passports** — Software Change Passport data, integrity
+  verification and JSON export when an Evidence Pack exists.
+- **Settings** — the only surface for API URL, actor and bearer-token setup.
 
-## React Compiler
+The global <kbd>Command</kbd>+<kbd>K</kbd> palette supports navigation,
+mission filtering and safe UI actions only; it never executes shell commands.
+The layout includes semantic controls, keyboard focus, responsive breakpoints,
+high-contrast states and reduced-motion support.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Run
 
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm install
+npm run dev
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+Set `VITE_SACM_API_URL` when the API is not proxied through `/api`.
+
+## Validate
+
+```bash
+npm run build
+npm run lint
+```

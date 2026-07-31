@@ -1,0 +1,15 @@
+{
+  "ablation": "single-agent-baseline",
+  "agent_name": "external-coding-agent",
+  "agent_version": "REPLACE_WITH_EXACT_VERSION",
+  "command": [
+    "REPLACE_WITH_AGENT_EXECUTABLE",
+    "--workspace",
+    "{workspace}"
+  ],
+  "model": "REPLACE_WITH_MODEL_ID",
+  "model_version": "REPLACE_WITH_IMMUTABLE_MODEL_VERSION",
+  "provider": "REPLACE_WITH_PROVIDER",
+  "runtime_version": "REPLACE_WITH_RUNTIME_VERSION",
+  "result_file": ".benchmark-agent-result.json"
+}

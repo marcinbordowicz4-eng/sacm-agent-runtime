@@ -1,5 +1,10 @@
 # SACM Agent Runtime
 
+[![CI](https://github.com/marcinbordowicz4-eng/sacm-agent-runtime/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/marcinbordowicz4-eng/sacm-agent-runtime/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/marcinbordowicz4-eng/sacm-agent-runtime/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/marcinbordowicz4-eng/sacm-agent-runtime/actions/workflows/codeql.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 Licensed under the [Apache License 2.0](LICENSE).
 
 SACM Agent Runtime is a production-oriented MVP for the **Shared Agent Context Model**: a multi-agent orchestration runtime that coordinates specialist agents, persistent memory, routing, repository operations, and API/CLI access for software delivery workflows.
@@ -63,6 +68,41 @@ In production, contracts must identify a SACM project through `project_id` or
 a repository reference mapped to a project. Task context, plans, requirements,
 traceability, and clarifications then enforce project membership and minimum
 viewer/developer roles.
+
+### Jira Cloud ticket-to-delivery
+
+The production Jira Cloud connector stores only secret references and project
+mapping. It verifies configured webhook signatures, durably deduplicates
+deliveries, normalizes ADF and mapped custom fields, and keeps one idempotent
+SACM status comment plus configured Jira workflow transitions. Clarification
+answers are accepted only through an exact marker:
+
+```text
+[SACM-CLARIFICATION:v1 clarification_id=<durable UUID>]
+<answer; JSON is required for list/object fields>
+```
+
+Configure with `POST /v1/jira/connectors`, receive webhooks at
+`POST /v1/jira/webhooks/{connector_id}`, then call
+`POST /v1/jira/connectors/{connector_id}/tasks/{task_id}/orchestrate`.
+SACM builds Definition-of-Ready, application impact, policy-governed planning,
+a project-scoped run, and remote execution jobs. Without an active executor it
+reports `WAITING_FOR_EXECUTOR`; without explicit GitHub delivery configuration
+it reports `PR_NOT_CONFIGURED`. It never claims a completed run or PR.
+
+Run the deterministic offline scenario:
+
+```bash
+sacm jira-e2e-demo
+```
+
+The command clearly labels Jira Cloud, the executor, and GitHub as simulated,
+uses fake network transports, scans the fixture repositories under
+`examples/jira-e2e-demo`, and uses the real SACM intake, context, planning, and
+run services. Expected readiness rises from `0.65` to `1.0`; the impact spans
+the storefront contract, payments service, and orders database. Evidence and
+PR delivery remain explicitly pending until a real executor/configuration is
+available.
 
 ### Enterprise IAM and tenant isolation
 
@@ -306,12 +346,19 @@ policy, or security signals are returned as explicit `null` values with
 Only persisted `agent_result` events become agent analytics; `system` and
 `user` runtime actors are never presented as agents.
 
-The dependency-free React/Vite dashboard in `apps/dashboard` consumes these
-APIs and the extended run context. It displays client/project/task and
-readiness metadata, clarifications, application impact/risk, planned and
-executed steps, portable agent assignments, policy/security/approvals,
-requirements and evidence coverage, cost and outcome metrics, failures,
-snapshots/replays/comparison, and project/organization rollups. Start it with:
+The dependency-free React/Vite Mission Control in `apps/dashboard` consumes
+only authorized SACM APIs. Its navigation includes Command Center, Missions,
+Applications, Agents, Policies, Evidence & Change Passports, Benchmarks,
+Security, and Settings. Command Center reports real outcome/cost/coverage,
+policy and security blocks, executor capacity, and operational SLO/backup/audit
+health while preserving explicit null and legacy states. Mission View combines
+readiness and clarification UX, risk-based autonomy, application impact,
+plans/jobs/agents, Change Journey events, verification, snapshots/replay,
+traceability and evidence. The application map is accessible and dependency
+free; agent rankings distinguish measured outcomes, insufficient samples and
+benchmarks that were not run. API/auth configuration appears only in Settings,
+and the global command palette performs navigation and safe UI actions only.
+Start it with:
 
 ```bash
 cd apps/dashboard
@@ -347,8 +394,11 @@ sacm runs cancel <run-id>
 sacm runs resume <run-id>
 sacm runs retry <run-id> <step-id>
 sacm runs evidence <run-id>
-sacm benchmark run benchmark-suite.json --output benchmark-report.json
-sacm benchmark compare baseline.json benchmark-report.json
+sacm benchmark validate
+sacm benchmark generate benchmark-work
+sacm benchmark run --runner baseline-command --config runner.json
+sacm benchmark compare baseline-v2.json candidate-v2.json
+sacm benchmark report benchmark-comparison-v2.json
 ```
 
 ## MCP server
@@ -554,12 +604,15 @@ executor substitute.
 
 ## Benchmarks
 
-`BenchmarkService` executes an explicit JSON suite and records only returned
-statuses and measured duration. Compare two reports with
-`sacm benchmark compare baseline.json candidate.json`; no benchmark score is
-claimed unless both reports contain real executions.
-Validate the required 50-case, non-placeholder suite before a formal run with
-`sacm benchmark validate benchmark-suite.json`.
+Benchmark 100 uses the checked-in versioned suite and deterministic local
+fixture manifest under `benchmarks/`. It contains exactly 100 balanced,
+version-pinned tasks across Python, TypeScript, React, Java, and Go. The
+baseline invokes a real configured external coding-agent CLI; the SACM arm
+schedules a real `AgentTaskV1` on the durable execution plane. Missing model,
+executor, or credential configuration is reported as `NOT_RUN`/`BLOCKED`, never
+as a result. Report v2 validates hash-addressed evidence, equal budgets, and
+complete cases; comparison emits paired bootstrap intervals only with the
+minimum completed sample. See [the protocol](docs/benchmark-protocol.md).
 
 ## Environment variables
 
@@ -654,6 +707,8 @@ ingress; expose only `/health` and `/ready` to infrastructure probes.
 The image runs `sacm-migrate` before the API. For a non-container deployment,
 run `sacm-migrate` once per release under the same `DATABASE_URL` before
 starting application replicas.
+For the 0.2.0 operational changes, migration sequence, release gates, and
+rollback boundary, see [`docs/releases/v0.2.0.md`](docs/releases/v0.2.0.md).
 Enterprise retention/residency policy, legal-hold-aware export and deletion,
 signed immutable audit batches, and SIEM delivery are described in
 [`docs/enterprise-governance.md`](docs/enterprise-governance.md).

@@ -32,7 +32,7 @@ data:
     workspace_root: /var/lib/sacm-executor/workspaces
     executor_identity: kubernetes-executor-01
     display_name: Kubernetes customer executor
-    version: 1.0.0
+    version: 0.2.0
     runtime_kind: kubernetes-gvisor
     sandbox_runtime: runsc
     sandbox_verified: true

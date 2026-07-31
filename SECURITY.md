@@ -41,3 +41,7 @@ attestation or Evidence Pack chains, and missing mandatory scan coverage as
 release blockers. Secret scan artifacts are sanitized before Evidence Pack
 copying; never upload raw credentials, private keys, or unredacted scanner
 fixtures as evidence.
+
+The repository release contract, severity thresholds, time-bound exception
+format, offline verification command, and incident escalation procedure are
+documented in [docs/release-security-gate.md](docs/release-security-gate.md).

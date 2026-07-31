@@ -3,7 +3,12 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from sacm.core.cost_service import CostService
-from sacm.infrastructure.db.models import ContextEvent, ExecutionPlan, Run
+from sacm.infrastructure.db.models import (
+    ContextEvent,
+    ExecutionPlan,
+    JiraDeliveryState,
+    Run,
+)
 
 
 class RunContextService:
@@ -31,6 +36,11 @@ class RunContextService:
             self.db.query(ExecutionPlan)
             .filter(ExecutionPlan.task_id == task.id)
             .order_by(ExecutionPlan.revision.desc(), ExecutionPlan.id)
+            .first()
+        )
+        jira_delivery = (
+            self.db.query(JiraDeliveryState)
+            .filter(JiraDeliveryState.task_id == task.id)
             .first()
         )
         context = {
@@ -92,6 +102,20 @@ class RunContextService:
             "costs": CostService(self.db).summarize_task(task.id),
             "application_context": self._application_context(task.application_context),
             "execution_plan": self._execution_plan(execution_plan),
+            "jira_delivery": (
+                {
+                    "status": jira_delivery.status,
+                    "jira_status": jira_delivery.jira_status,
+                    "status_comment_id": jira_delivery.status_comment_id,
+                    "pr_status": jira_delivery.pr_status,
+                    "pr_url": jira_delivery.pr_url,
+                    "context": jira_delivery.context,
+                    "last_error": jira_delivery.last_error,
+                    "updated_at": jira_delivery.updated_at,
+                }
+                if jira_delivery
+                else None
+            ),
         }
         if include_snapshot_metadata:
             from sacm.core.snapshot_service import SnapshotService

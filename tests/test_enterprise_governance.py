@@ -238,7 +238,9 @@ class _FlakyTransport:
         return _Response()
 
 
-def test_siem_ssrf_secrets_retries_and_idempotency(db):
+@pytest.mark.security_release_gate
+def test_siem_ssrf_secrets_retries_and_idempotency(db, request):
+    request.node.user_properties.append(("security_test_id", "SRG-ADV-006"))
     organization, _ = _organization(db, "siem")
     with pytest.raises(ValueError, match="disallowed"):
         validate_http_endpoint(

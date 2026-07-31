@@ -10,6 +10,8 @@ import yaml
 from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from sacm import __version__
+
 
 class TLSMetadata(BaseModel):
     ca_bundle: Path | None = None
@@ -120,7 +122,10 @@ class ExecutorSettings(BaseSettings):
     workspace_root: Path = Path("/var/lib/sacm-executor/workspaces")
     executor_identity: str = Field(pattern=r"^[a-zA-Z0-9_.:@/-]+$")
     display_name: str
-    version: str = Field(pattern=r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
+    version: str = Field(
+        default=__version__,
+        pattern=r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$",
+    )
     runtime_kind: str = "customer-hosted"
     sandbox_runtime: str = "runsc"
     sandbox_verified: bool = True

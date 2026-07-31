@@ -8,11 +8,14 @@ from sqlalchemy.pool import StaticPool
 
 from apps.api.main import app
 from sacm.core.auth_service import authenticate_request
+from sacm.core.credential_lease_service import CredentialLeaseService
 from sacm.core.evidence_service import EvidenceService
 from sacm.core.execution_plane_service import ExecutionPlaneService
+from sacm.core.governance_service import GovernancePolicyService, SIEMService
 from sacm.core.memory_service import MemoryService
 from sacm.core.policy_service import PolicyService
 from sacm.core.repository_audit_service import RepositoryAuditService
+from sacm.core.resilience_service import BackupService
 from sacm.core.run_service import RunService
 from sacm.core.tenancy_service import (
     AuthorizationError,
@@ -59,7 +62,9 @@ def _tenants(db):
     return organization_a, project_a, organization_b, project_b
 
 
-def test_cross_tenant_resources_have_zero_leakage(db, monkeypatch):
+@pytest.mark.security_release_gate
+def test_cross_tenant_resources_have_zero_leakage(db, monkeypatch, request):
+    request.node.user_properties.append(("security_test_id", "SRG-ADV-004"))
     monkeypatch.setenv("SACM_ENVIRONMENT", "production")
     organization_a, project_a, _, project_b = _tenants(db)
     run_a = RunService(db).create(
@@ -69,6 +74,21 @@ def test_cross_tenant_resources_have_zero_leakage(db, monkeypatch):
         RunCreate(title="B", description="Tenant B run", project_id=project_b.id)
     )
     resources = ResourceAuthorizationService(db)
+
+    sensitive_surface_checks = (
+        lambda: ServiceCredentialService(db).list(organization_a.id, "owner-b"),
+        lambda: CredentialLeaseService(db).list_leases(
+            organization_a.id, "owner-b"
+        ),
+        lambda: GovernancePolicyService(db).list_policies(
+            organization_a.id, "owner-b"
+        ),
+        lambda: SIEMService(db).list_sinks(organization_a.id, "owner-b"),
+        lambda: BackupService(db).list("owner-b", organization_a.id),
+    )
+    for check in sensitive_surface_checks:
+        with pytest.raises(AuthorizationError, match="not accessible"):
+            check()
 
     with pytest.raises(AuthorizationError, match="not accessible"):
         resources.require_run(run_a.id, "owner-b", "runs.read")

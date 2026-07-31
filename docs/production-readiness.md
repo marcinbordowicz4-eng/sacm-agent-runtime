@@ -18,6 +18,12 @@ completeness API and on the run contract.
 
 ## Enterprise supply-chain gate
 
+The workflow-level blocking contract and signed release report are documented
+in [release-security-gate.md](release-security-gate.md). A missing scanner,
+container build, SBOM, CodeQL result, signature, or adversarial test is
+`INCOMPLETE` and blocks promotion rather than being replaced with synthetic
+evidence.
+
 Apply Alembic revision `f7b0c5d6e8a2` after `e6a9b4c5d7f1`. The migration is
 dynamic-baseline compatible, adds Evidence Pack signature/chain metadata and
 run completeness fields, and creates durable image, release, record, and

@@ -1,0 +1,43 @@
+{
+  "schema_version": "release-security-policy/v1",
+  "policy_version": "2026.07.31",
+  "scans": {
+    "dependency": {
+      "report": "dependency-scan.json",
+      "block_severities": ["CRITICAL", "HIGH"],
+      "ignore_unfixed": true
+    },
+    "container": {
+      "report": "container-scan.json",
+      "block_severities": ["CRITICAL", "HIGH"],
+      "ignore_unfixed": true
+    },
+    "secret": {
+      "report": "secret-scan.json",
+      "block_on_findings": true
+    },
+    "iac": {
+      "report": "iac-scan.json",
+      "minimum_block_severity": "HIGH"
+    }
+  },
+  "evidence": {
+    "sbom": "sbom.spdx.json",
+    "provenance": "provenance.signed.json",
+    "tool_versions": "tool-versions.json",
+    "codeql": "codeql-status.json",
+    "require_codeql_conclusion": "success",
+    "require_ed25519_provenance": true
+  },
+  "required_adversarial_tests": [
+    "SRG-ADV-001",
+    "SRG-ADV-002",
+    "SRG-ADV-003",
+    "SRG-ADV-004",
+    "SRG-ADV-005",
+    "SRG-ADV-006",
+    "SRG-ADV-007",
+    "SRG-ADV-008"
+  ],
+  "exceptions": []
+}

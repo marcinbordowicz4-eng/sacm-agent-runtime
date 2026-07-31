@@ -79,9 +79,57 @@ class TaskIntakeService:
             .first()
         )
         if existing:
-            assessment = ReadinessAssessment.model_validate(
-                existing.readiness_details
+            assessment = self.assess(contract)
+            repository_path = next(
+                (
+                    reference.path
+                    for reference in contract.repositories
+                    if reference.path
+                ),
+                None,
             )
+            existing.title = contract.title
+            existing.description = contract.description
+            existing.external_url = contract.external_url
+            existing.target_repo_path = repository_path
+            existing.task_contract = contract.model_dump(mode="json")
+            existing.readiness_score = assessment.score
+            existing.readiness_details = assessment.model_dump(mode="json")
+            existing.status = (
+                "pending" if assessment.ready else "awaiting_clarification"
+            )
+            existing.updated_at = datetime.utcnow()
+            by_field = {item.field_name: item for item in existing.clarifications}
+            for field in assessment.missing_fields:
+                if field not in by_field:
+                    self.db.add(
+                        TaskClarification(
+                            task_id=existing.id,
+                            field_name=field,
+                            question=CLARIFICATION_QUESTIONS[field],
+                        )
+                    )
+            self.db.add(
+                ContextEvent(
+                    task_id=existing.id,
+                    organization_id=existing.organization_id,
+                    project_id=existing.project_id,
+                    tenant_attribution=existing.tenant_attribution,
+                    data_region=existing.data_region,
+                    data_classification=existing.data_classification,
+                    event_type="task_contract_updated",
+                    payload={
+                        "connector_type": contract.connector_type,
+                        "external_id": contract.external_id,
+                        "readiness": assessment.model_dump(mode="json"),
+                    },
+                )
+            )
+            self.db.commit()
+            self.db.refresh(existing)
+            from sacm.core.traceability_service import TraceabilityService
+
+            TraceabilityService(self.db).refresh(existing.id)
             return existing, assessment, list(existing.clarifications)
 
         assessment = self.assess(contract)

@@ -12,6 +12,15 @@ console = Console()
 BASE_URL = "http://localhost:8000"
 
 
+@app.command("jira-e2e-demo")
+def jira_e2e_demo() -> None:
+    """Run the deterministic Jira-to-delivery scenario fully offline."""
+    from sacm.demo.jira_e2e import run_demo
+
+    console.print("[yellow]External Jira, executor, and GitHub services are simulated.[/yellow]")
+    console.print(run_demo())
+
+
 @app.command()
 def init() -> None:
     """Initialize SACM configuration."""
@@ -131,61 +140,145 @@ def run_evidence(run_id: str) -> None:
     console.print(response.json())
 
 
-@benchmark_app.command("compare")
-def compare_benchmarks(baseline: str, candidate: str) -> None:
-    """Compare two JSON reports produced by BenchmarkService."""
-    import json
-    from pathlib import Path
+@benchmark_app.command("generate")
+def generate_benchmark_fixtures(
+    destination: str,
+    suite: str = "benchmarks/suite-v2.json",
+    case_id: list[str] | None = typer.Option(None, "--case-id"),
+) -> None:
+    """Generate deterministic, pinned local fixture repositories."""
+    from sacm.core.benchmark_service import FixtureGenerator, load_suite
 
-    from sacm.core.benchmark_service import BenchmarkService
-
-    console.print(
-        BenchmarkService.compare(
-            json.loads(Path(baseline).read_text(encoding="utf-8")),
-            json.loads(Path(candidate).read_text(encoding="utf-8")),
-        )
+    manifest = FixtureGenerator(load_suite(suite)).generate(
+        destination, set(case_id or []) or None
     )
-
-
-@benchmark_app.command("run")
-def run_benchmark(suite: str, output: str = "benchmark-report.json") -> None:
-    """Execute an explicit suite through the durable-runs API."""
-    import json
-    from pathlib import Path
-
-    from sacm.core.benchmark_service import BenchmarkService
-
-    service = BenchmarkService()
-
-    def execute(case):
-        payload = {"title": case.title, "description": case.description}
-        if case.target_repo_path:
-            payload["target_repo_path"] = case.target_repo_path
-        created = httpx.post(f"{BASE_URL}/v1/runs", json=payload)
-        created.raise_for_status()
-        run_id = created.json()["id"]
-        completed = httpx.post(
-            f"{BASE_URL}/v1/runs/{run_id}/execute", timeout=600
-        )
-        completed.raise_for_status()
-        return completed.json()
-
-    report = service.run(service.load_suite(suite), execute)
-    Path(output).write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
-    console.print(report)
+    console.print(
+        {
+            "status": "GENERATED",
+            "case_count": len(manifest["generated"]),
+            "destination": destination,
+        }
+    )
 
 
 @benchmark_app.command("validate")
-def validate_benchmark_suite(suite: str, minimum_cases: int = 50) -> None:
-    """Validate that a suite is ready for a full benchmark run."""
-    from sacm.core.benchmark_service import BenchmarkService
+def validate_benchmark(
+    suite: str = "benchmarks/suite-v2.json",
+    report: str | None = typer.Option(None, "--report"),
+) -> None:
+    """Validate the v2 suite and, optionally, a complete evidence report."""
+    import json
+    from pathlib import Path
 
-    service = BenchmarkService()
-    console.print(
-        service.validate_suite(
-            service.load_suite(suite), minimum_cases=minimum_cases
-        )
+    from sacm.core.benchmark_service import (
+        BenchmarkReportV2,
+        load_suite,
+        validate_report,
+        validate_suite,
     )
+
+    loaded = load_suite(suite)
+    result = validate_suite(loaded)
+    if report:
+        evidence_report = BenchmarkReportV2.model_validate(
+            json.loads(Path(report).read_text(encoding="utf-8"))
+        )
+        result["report"] = validate_report(evidence_report, loaded)
+    console.print(result)
+
+
+@benchmark_app.command("run")
+def run_benchmark(
+    runner: str = typer.Option(..., "--runner", help="baseline-command or sacm-execution-plane"),
+    suite: str = "benchmarks/suite-v2.json",
+    fixtures: str = "benchmark-work",
+    config: str | None = typer.Option(None, "--config"),
+    output: str = "benchmark-report-v2.json",
+    ablation: str | None = typer.Option(None, "--ablation"),
+) -> None:
+    """Run real external agents, or truthfully emit NOT_RUN when unconfigured."""
+    import json
+    from pathlib import Path
+
+    from sacm.core.benchmark_service import (
+        BenchmarkService,
+        ExecutionConfigV2,
+        load_suite,
+    )
+
+    if runner not in {"baseline-command", "sacm-execution-plane"}:
+        raise typer.BadParameter("runner must be baseline-command or sacm-execution-plane")
+    config_data = (
+        json.loads(Path(config).read_text(encoding="utf-8")) if config else {}
+    )
+    config_data["runner"] = runner
+    config_data.setdefault(
+        "ablation",
+        ablation
+        or (
+            "single-agent-baseline"
+            if runner == "baseline-command"
+            else "sacm-full"
+        ),
+    )
+    execution_config = ExecutionConfigV2.model_validate(config_data)
+    report = BenchmarkService.run(load_suite(suite), execution_config, fixtures)
+    Path(output).write_text(
+        report.model_dump_json(indent=2) + "\n", encoding="utf-8"
+    )
+    console.print(
+        f"[bold yellow]STATUS: {report.status} — {report.truthful_status}[/bold yellow]"
+    )
+
+
+@benchmark_app.command("compare")
+def compare_benchmarks(
+    baseline: str,
+    candidate: str,
+    suite: str = "benchmarks/suite-v2.json",
+    output: str = "benchmark-comparison-v2.json",
+    minimum_paired_sample: int = 10,
+) -> None:
+    """Compare valid paired reports with deterministic bootstrap intervals."""
+    import json
+    from pathlib import Path
+
+    from sacm.core.benchmark_service import (
+        BenchmarkReportV2,
+        compare_reports,
+        load_suite,
+    )
+
+    comparison = compare_reports(
+        BenchmarkReportV2.model_validate_json(
+            Path(baseline).read_text(encoding="utf-8")
+        ),
+        BenchmarkReportV2.model_validate_json(
+            Path(candidate).read_text(encoding="utf-8")
+        ),
+        load_suite(suite),
+        minimum_paired_sample=minimum_paired_sample,
+    )
+    Path(output).write_text(
+        json.dumps(comparison, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    console.print(
+        f"[bold yellow]STATUS: {comparison['status']} — "
+        f"{comparison['truthful_status']}[/bold yellow]"
+    )
+
+
+@benchmark_app.command("report")
+def render_benchmark_report(source: str, output: str = "benchmark-report-v2.md") -> None:
+    """Render report or comparison JSON as Markdown with prominent status."""
+    import json
+    from pathlib import Path
+
+    from sacm.core.benchmark_service import render_markdown
+
+    payload = json.loads(Path(source).read_text(encoding="utf-8"))
+    Path(output).write_text(render_markdown(payload), encoding="utf-8")
+    console.print(f"[green]Wrote {output}[/green]")
 
 
 if __name__ == "__main__":

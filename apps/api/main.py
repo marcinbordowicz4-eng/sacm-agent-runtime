@@ -15,6 +15,7 @@ from apps.api.routes import (
     github,
     governance,
     intake,
+    jira,
     memory,
     organizations,
     repository,
@@ -25,6 +26,7 @@ from apps.api.routes import (
     tasks,
     traceability,
 )
+from sacm import __version__
 from sacm.adapters.repository_adapter import RepositoryError, RepositoryPathError
 from sacm.core.auth_service import (
     require_authenticated_actor,
@@ -44,7 +46,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="SACM Agent Runtime", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="SACM Agent Runtime", version=__version__, lifespan=lifespan)
 
 
 @app.exception_handler(AuthorizationError)
@@ -99,6 +101,7 @@ app.include_router(
     tags=["intake"],
     dependencies=authenticated_dependencies,
 )
+app.include_router(jira.router, prefix="/v1/jira", tags=["jira"])
 app.include_router(
     runs.router, prefix="/v1/runs", tags=["runs"], dependencies=authenticated_dependencies
 )

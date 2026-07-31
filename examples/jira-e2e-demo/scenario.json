@@ -1,0 +1,9 @@
+{
+  "simulated_external_services": ["Jira Cloud REST API", "remote executor", "GitHub"],
+  "issue": "SHOP-42",
+  "initial_state": "incomplete Definition of Ready",
+  "clarification": "acceptance criteria supplied through a marked Jira comment",
+  "impact": ["storefront API/contract", "payments service", "orders database schema"],
+  "expected_delivery_without_executor": "WAITING_FOR_EXECUTOR",
+  "expected_pr_without_configuration": "PR_NOT_CONFIGURED"
+}

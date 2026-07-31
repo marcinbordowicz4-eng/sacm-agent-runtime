@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sacm-agent-runtime"
-version = "0.1.0"
-description = "Shared Agent Context Model - multi-agent orchestration runtime"
+version = "0.2.0"
+description = "Secure, auditable software-delivery control plane for policy-governed coding agents"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
@@ -97,3 +97,6 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "security_release_gate: deterministic adversarial tests required by the release security policy",
+]
