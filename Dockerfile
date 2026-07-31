@@ -20,7 +20,10 @@ COPY pyproject.toml README.md ./
 COPY sacm ./sacm
 COPY apps ./apps
 COPY cli ./cli
-RUN pip install -e ".[auth,mlflow,temporal]"
+RUN pip install --no-cache-dir -e ".[auth,mlflow,temporal]" \
+    && pip install --no-cache-dir --upgrade \
+      "wheel>=0.46.2" \
+      "jaraco.context>=6.1.0"
 
 RUN addgroup --system sacm && adduser --system --ingroup sacm sacm
 COPY --chown=sacm:sacm . .

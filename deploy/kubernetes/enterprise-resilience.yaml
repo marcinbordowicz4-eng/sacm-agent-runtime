@@ -36,6 +36,12 @@ spec:
     spec:
       restartPolicy: OnFailure
       runtimeClassName: gvisor
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: migrate
           image: ghcr.io/example/sacm-agent-runtime:replace-me
@@ -67,6 +73,12 @@ spec:
         app: sacm-api
     spec:
       runtimeClassName: gvisor
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: topology.kubernetes.io/zone
@@ -166,6 +178,12 @@ spec:
         app: sacm-worker
     spec:
       runtimeClassName: gvisor
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -233,6 +251,12 @@ spec:
       labels:
         app: temporal-frontend
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -240,6 +264,19 @@ spec:
               labelSelector:
                 matchLabels:
                   app: temporal-frontend
+      initContainers:
+        - name: prepare-temporal-config
+          image: temporalio/auto-setup:1.26
+          command: ["sh", "-c", "cp -a /etc/temporal/config/. /work/"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: temporal-config
+              mountPath: /work
       containers:
         - name: temporal
           image: temporalio/auto-setup:1.26
@@ -275,9 +312,20 @@ spec:
             periodSeconds: 10
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             runAsNonRoot: true
             capabilities:
               drop: ["ALL"]
+          volumeMounts:
+            - name: temporal-config
+              mountPath: /etc/temporal/config
+            - name: temporal-tmp
+              mountPath: /tmp
+      volumes:
+        - name: temporal-config
+          emptyDir: {}
+        - name: temporal-tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -314,6 +362,12 @@ spec:
         spec:
           restartPolicy: OnFailure
           runtimeClassName: gvisor
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
           containers:
             - name: recover
               image: ghcr.io/example/sacm-agent-runtime:replace-me
@@ -345,6 +399,12 @@ spec:
         spec:
           restartPolicy: OnFailure
           runtimeClassName: gvisor
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
           containers:
             - name: backup
               image: ghcr.io/example/sacm-agent-runtime:replace-me
