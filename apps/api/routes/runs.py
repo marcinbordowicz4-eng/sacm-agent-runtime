@@ -9,6 +9,7 @@ from sacm.core.auth_service import (
 )
 from sacm.core.evidence_service import EvidenceService
 from sacm.core.external_agent_service import ExternalAgentService
+from sacm.core.run_context_service import RunContextService
 from sacm.core.run_service import RunService
 from sacm.core.tenancy_service import AuthorizationError, Role, TenancyService
 from sacm.core.workflow_backend import workflow_backend
@@ -115,6 +116,16 @@ def get_run(
     db: Session = Depends(get_db),
 ) -> RunRead:
     return RunRead.model_validate(_authorize_run(db, run_id, actor))
+
+
+@router.get("/{run_id}/context")
+def get_run_context(
+    run_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> dict:
+    run = _authorize_run(db, run_id, actor)
+    return RunContextService(db).build(run)
 
 
 @router.get("/{run_id}/steps", response_model=list[RunStepRead])

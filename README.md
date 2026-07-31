@@ -149,6 +149,7 @@ Pass the repository path through the API or CLI when creating tasks.
 - `POST /github/pull-requests/{number}/merge`
 - `POST /v1/runs`
 - `GET /v1/runs/{run_id}`
+- `GET /v1/runs/{run_id}/context`
 - `POST /v1/runs/{run_id}/agent-steps`
 - `POST /v1/runs/{run_id}/agent-steps/{step_id}/result`
 - `POST /v1/runs/{run_id}/execute`

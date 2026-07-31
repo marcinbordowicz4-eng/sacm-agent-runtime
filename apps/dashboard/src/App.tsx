@@ -1,5 +1,5 @@
 
-import { type FormEvent, type ReactNode, useEffect, useMemo, useState } from 'react'
+import { type FormEvent, type ReactNode, useEffect, useState } from 'react'
 import './App.css'
 
 type Run = {
@@ -16,6 +16,25 @@ type Event = { id: string; sequence: number; event_type: string; actor: string; 
 type Approval = { id: string; action: string; status: string; requested_at: string; resource: Record<string, unknown> }
 type Evidence = { id: string; path: string; manifest_hash: string; created_at: string }
 type Client = { id: string; slug: string; name: string; projects: { id: string; name: string; repository_full_name?: string | null }[] }
+type AgentInvocation = {
+  event_id: string
+  name: string
+  role?: string | null
+  status?: string | null
+  summary?: string | null
+  confidence?: number | null
+  next_state_hint?: string | null
+  tool_execution: Record<string, unknown>[]
+  created_at: string
+}
+type RunContext = {
+  run: { id: string; workflow_version: string; source_revision?: string | null; target_repo_path?: string | null }
+  task: { id: string; title: string; description: string; status: string; target_repo_path?: string | null; created_at: string; updated_at: string }
+  organization?: { id: string; slug: string; name: string } | null
+  project?: { id: string; slug: string; name: string; repository_full_name?: string | null; repository_path?: string | null } | null
+  agents: AgentInvocation[]
+  costs: Record<string, unknown>
+}
 
 const json = (value: unknown) => JSON.stringify(value, null, 2)
 const date = (value?: string | null) => value ? new Date(value).toLocaleString() : '—'
@@ -32,6 +51,7 @@ function App() {
   const [evidence, setEvidence] = useState<Evidence[]>([])
   const [costs, setCosts] = useState<Record<string, unknown>>({})
   const [clients, setClients] = useState<Client[]>([])
+  const [context, setContext] = useState<RunContext>()
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -49,15 +69,15 @@ function App() {
     setLoading(true)
     setError('')
     try {
-      const [current, nextSteps, nextEvents, nextApprovals, nextEvidence, nextCosts] = await Promise.all([
+      const [current, nextContext, nextSteps, nextEvents, nextApprovals, nextEvidence] = await Promise.all([
         request<Run>(`/v1/runs/${run.id}`),
+        request<RunContext>(`/v1/runs/${run.id}/context`),
         request<Step[]>(`/v1/runs/${run.id}/steps`),
         request<Event[]>(`/v1/runs/${run.id}/events`),
         request<Approval[]>(`/v1/approvals?run_id=${run.id}`),
         request<Evidence[]>(`/v1/runs/${run.id}/evidence`),
-        request<Record<string, unknown>>(`/tasks/${run.task_id}/costs`),
       ])
-      setSelected(current); setSteps(nextSteps); setEvents(nextEvents); setApprovals(nextApprovals); setEvidence(nextEvidence); setCosts(nextCosts)
+      setSelected(current); setContext(nextContext); setSteps(nextSteps); setEvents(nextEvents); setApprovals(nextApprovals); setEvidence(nextEvidence); setCosts(nextContext.costs)
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to load run') }
     finally { setLoading(false) }
   }
@@ -82,14 +102,13 @@ function App() {
     setClients(populated)
   }
 
+  // Initial connection load; later refreshes are explicit to avoid request loops.
+  // oxlint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { void Promise.all([loadRuns(), loadClients()]).catch((cause) => setError(cause instanceof Error ? cause.message : 'Unable to load operational data')) }, [])
 
-  const agents = useMemo(() => [...new Set(events.map((event) => String(event.payload.agent_name || event.actor)).filter(Boolean))], [events])
   const failures = events.filter((event) => /failed|error/i.test(event.event_type) || event.payload.failure)
-  const commands = events.flatMap((event) => {
-    const executions = event.payload.tool_execution
-    return Array.isArray(executions) ? executions.map((item) => ({ event, item })) : []
-  })
+  const agents = context?.agents || []
+  const commands = agents.flatMap((agent) => agent.tool_execution.map((item) => ({ agent, item })))
 
   const action = async (path: string, body?: Record<string, unknown>) => {
     if (!selected) return
@@ -128,13 +147,31 @@ function App() {
             <Metric label="Agents" value={agents.length} /><Metric label="Steps" value={steps.length} /><Metric label="Approvals" value={approvals.filter((item) => item.status === 'PENDING').length} /><Metric label="Failures" value={failures.length} />
           </section>
           <section className="grid">
+            <Panel title="Client & project">{context?.organization ? <dl className="metadata">
+              <div><dt>Client</dt><dd>{context.organization.name}</dd></div>
+              <div><dt>Organization ID</dt><dd>{context.organization.id}</dd></div>
+              <div><dt>Project</dt><dd>{context.project?.name || '—'}</dd></div>
+              <div><dt>Repository</dt><dd>{context.project?.repository_full_name || context.project?.repository_path || '—'}</dd></div>
+            </dl> : <p>This legacy run is not linked to a client or project.</p>}</Panel>
+            <Panel title="Processed task">{context ? <dl className="metadata">
+              <div><dt>Title</dt><dd>{context.task.title}</dd></div>
+              <div><dt>Status</dt><dd>{context.task.status}</dd></div>
+              <div><dt>Task ID</dt><dd>{context.task.id}</dd></div>
+              <div><dt>Workflow</dt><dd>{context.run.workflow_version}</dd></div>
+              <div><dt>Source revision</dt><dd>{context.run.source_revision || 'Not recorded'}</dd></div>
+              <div className="wide"><dt>Description</dt><dd>{context.task.description}</dd></div>
+            </dl> : <p>Task metadata unavailable.</p>}</Panel>
             <Panel title="Timeline"><ol className="timeline">{events.map((event) => <li key={event.id}><b>{event.event_type}</b><span>{event.actor} · {date(event.occurred_at)}</span><code>{json(event.payload)}</code></li>)}</ol></Panel>
-            <Panel title="Active agents">{agents.length ? <ul>{agents.map((agent) => <li key={agent}>{agent}</li>)}</ul> : <p>No agent invocation recorded.</p>}</Panel>
+            <Panel title="Invoked agents">{agents.length ? <div>{agents.map((agent) => <div className="agent" key={agent.event_id}>
+              <div><b>{agent.name}</b><span>{agent.role || 'unknown role'} · {agent.status || 'status unavailable'} · {date(agent.created_at)}</span></div>
+              <p>{agent.summary || 'No summary recorded.'}</p>
+              <small>Confidence: {agent.confidence ?? '—'} · Next: {agent.next_state_hint || '—'}</small>
+            </div>)}</div> : <p>No agent invocation was recorded before this run ended.</p>}</Panel>
             <Panel title="Approvals">{approvals.map((approval) => <div className="approval" key={approval.id}><b>{approval.action}</b><span>{approval.status}</span>{approval.status === 'PENDING' && <div><button onClick={() => void action(`/v1/approvals/${approval.id}/decision`, { approve: true, reason: 'Approved from SACM dashboard.' })}>Approve</button><button onClick={() => void action(`/v1/approvals/${approval.id}/decision`, { approve: false, reason: 'Rejected from SACM dashboard.' })}>Reject</button></div>}</div>) || <p>No approvals.</p>}</Panel>
             <Panel title="Evidence">{evidence.map((item) => <div className="evidence" key={item.id}><b>{item.manifest_hash.slice(0, 16)}…</b><span>{item.path}</span></div>) || <p>No evidence package yet.</p>}</Panel>
             <Panel title="Steps">{steps.map((step) => <div className="step" key={step.id}><span>{step.name}</span><b>{step.status}</b>{step.status === 'FAILED' && <button onClick={() => void action(`/v1/runs/${selected.id}/steps/${step.id}/retry`)}>Retry</button>}</div>)}</Panel>
             <Panel title="Cost & tool usage"><pre>{json(costs)}</pre></Panel>
-            <Panel title="Executed commands">{commands.length ? commands.map(({ event, item }, index) => <pre key={`${event.id}-${index}`}>{json(item)}</pre>) : <p>No command evidence recorded.</p>}</Panel>
+            <Panel title="Executed commands">{commands.length ? commands.map(({ agent, item }, index) => <pre key={`${agent.event_id}-${index}`}>{agent.name}{'\n'}{json(item)}</pre>) : <p>No command evidence recorded.</p>}</Panel>
             <Panel title="Failure reason">{failures.length ? failures.map((event) => <pre key={event.id}>{json(event.payload)}</pre>) : <p>No failure recorded.</p>}</Panel>
           </section>
         </>}
