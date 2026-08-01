@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from sacm.core.evidence_service import EvidenceService
 from sacm.core.orchestrator import Orchestrator
+from sacm.core.recovery_service import RecoveryService
 from sacm.core.run_service import RunService
 
 
@@ -24,7 +25,7 @@ class LocalWorkflow:
             self.runs.transition(run_id, "PLANNING", "RunStarted")
         elif run.status == "FAILED":
             self.runs.resume(run_id)
-        elif run.status != "PLANNING":
+        elif run.status not in {"PLANNING", "FIXING", "IMPLEMENTING"}:
             raise ValueError(f"Run {run_id} cannot execute from {run.status}")
 
         step = self.runs.add_step(
@@ -33,54 +34,87 @@ class LocalWorkflow:
             input_={"task_id": run.task_id},
             idempotency_key=f"{run_id}:legacy-orchestrator",
         )
-        if step.status == "FAILED":
-            step = self.runs.retry_step(run_id, step.id)
-        self.runs.start_step(run_id, step.id)
-        self.runs.transition(
-            run_id,
-            "IMPLEMENTING",
-            "WorkflowImplementing",
-            step_id=step.id,
-        )
-        try:
-            output = Orchestrator(self.db).run_task(
-                run.task_id,
-                run_id=run_id,
-                **({"max_steps": max_steps} if max_steps else {}),
-            )
-            current_run = self.runs.get(run_id)
-            if current_run is None:
-                raise ValueError(f"Run {run_id} disappeared during execution")
-            if current_run.cancellation_requested:
-                return {"run_id": run_id, "status": self.runs.cancel(run_id).status}
-            if output["status"] != "done":
-                raise RuntimeError(
-                    "The orchestrator did not produce a verified completed task."
+        while True:
+            if step.status == "FAILED":
+                failure = (step.output or {}).get("failure") or {
+                    "type": "PreviousExecutionFailure",
+                    "message": "Retrying a previously failed workflow step.",
+                }
+                step, _, decision = RecoveryService(self.db).handle(
+                    run_id, step.id, failure
                 )
-            self.runs.complete_step(run_id, step.id, output)
-            self.runs.transition(run_id, "REVIEWING", "WorkflowReviewing", step_id=step.id)
-            self.runs.transition(run_id, "TESTING", "WorkflowTesting", step_id=step.id)
-            self.runs.transition(run_id, "DELIVERING", "WorkflowDelivering", step_id=step.id)
-            EvidenceService(self.db).build(run_id, trusted_internal=True)
-            completed = self.runs.transition(
-                run_id,
-                "COMPLETED",
-                "RunCompleted",
-                step_id=step.id,
-            )
-            EvidenceService(self.db).build(run_id, trusted_internal=True)
-            return {"run_id": run_id, "status": completed.status, "output": output}
-        except Exception as exc:
-            self.runs.fail_step(
-                run_id,
-                step.id,
-                {"type": exc.__class__.__name__, "message": str(exc)},
-            )
-            failed = self.runs.transition(
-                run_id,
-                "FAILED",
-                "RunFailed",
-                payload={"type": exc.__class__.__name__, "message": str(exc)},
-                step_id=step.id,
-            )
-            return {"run_id": run_id, "status": failed.status, "error": str(exc)}
+                if decision.status == "ESCALATED":
+                    return {
+                        "run_id": run_id,
+                        "status": "FAILED",
+                        "error": failure["message"],
+                        "recovery": decision.model_dump(mode="json"),
+                    }
+            self.runs.start_step(run_id, step.id)
+            current = self.runs.get(run_id)
+            if current is None:
+                raise ValueError(f"Run {run_id} disappeared during execution")
+            if current.status != "IMPLEMENTING":
+                self.runs.transition(
+                    run_id,
+                    "IMPLEMENTING",
+                    "WorkflowImplementing",
+                    step_id=step.id,
+                )
+            try:
+                output = Orchestrator(self.db).run_task(
+                    run.task_id,
+                    run_id=run_id,
+                    **({"max_steps": max_steps} if max_steps else {}),
+                    recovery_context=self._recovery_context(step),
+                )
+                current_run = self.runs.get(run_id)
+                if current_run is None:
+                    raise ValueError(f"Run {run_id} disappeared during execution")
+                if current_run.cancellation_requested:
+                    return {"run_id": run_id, "status": self.runs.cancel(run_id).status}
+                if output["status"] != "done":
+                    raise RuntimeError(
+                        "The orchestrator did not produce a verified completed task."
+                    )
+                self.runs.complete_step(run_id, step.id, output)
+                self.runs.transition(
+                    run_id, "REVIEWING", "WorkflowReviewing", step_id=step.id
+                )
+                self.runs.transition(
+                    run_id, "TESTING", "WorkflowTesting", step_id=step.id
+                )
+                self.runs.transition(
+                    run_id, "DELIVERING", "WorkflowDelivering", step_id=step.id
+                )
+                EvidenceService(self.db).build(run_id, trusted_internal=True)
+                completed = self.runs.transition(
+                    run_id,
+                    "COMPLETED",
+                    "RunCompleted",
+                    step_id=step.id,
+                )
+                EvidenceService(self.db).build(run_id, trusted_internal=True)
+                return {"run_id": run_id, "status": completed.status, "output": output}
+            except Exception as exc:
+                failure = {"type": exc.__class__.__name__, "message": str(exc)}
+                self.runs.fail_step(run_id, step.id, failure)
+                step, _, decision = RecoveryService(self.db).handle(
+                    run_id, step.id, failure
+                )
+                if decision.status == "ESCALATED":
+                    return {
+                        "run_id": run_id,
+                        "status": "FAILED",
+                        "error": str(exc),
+                        "recovery": decision.model_dump(mode="json"),
+                    }
+
+    @staticmethod
+    def _recovery_context(step) -> dict[str, Any] | None:
+        task = step.input_.get("agent_task") or {}
+        return (
+            (task.get("execution_context") or {}).get("recovery")
+            or step.input_.get("recovery")
+            or (step.output or {}).get("recovery")
+        )

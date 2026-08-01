@@ -10,7 +10,7 @@ from sacm.core.external_agent_service import ExternalAgentService
 from sacm.core.local_workflow import LocalWorkflow
 from sacm.core.run_service import RunService
 from sacm.infrastructure.db.models import Project
-from sacm.schemas.contracts import ExternalAgentStepCreate
+from sacm.schemas.contracts import AgentTaskV1, ExternalAgentStepCreate
 
 
 class WorkflowBackend(Protocol):
@@ -86,7 +86,7 @@ class RemoteWorkflowBackend:
             runs.transition(run_id, "PLANNING", "RemoteRunSubmitted")
         elif run.status == "FAILED":
             runs.resume(run_id)
-        elif run.status != "PLANNING":
+        elif run.status not in {"PLANNING", "FIXING", "IMPLEMENTING"}:
             raise ValueError(f"Run {run_id} cannot schedule from {run.status}")
 
         project = self.db.get(Project, run.project_id) if run.project_id else None
@@ -95,33 +95,56 @@ class RemoteWorkflowBackend:
             if project and project.repository_full_name
             else os.getenv("SACM_CUSTOMER_REPOSITORY_COORDINATE")
         )
-        scheduled = ExternalAgentService(self.db).schedule(
-            run_id,
-            ExternalAgentStepCreate(
-                framework="sacm-remote",
-                agent_name="workflow-executor",
-                idempotency_key=f"{run_id}:remote-workflow",
-                role="reasoner",
-                objective=run.task.description,
-                acceptance_criteria=[
-                    "Return a valid AgentResultV1 for the scheduled run step."
-                ],
-                context_references=[f"task:{run.task_id}", f"run:{run_id}"],
-                allowed_tools=[],
-                denied_tools=[],
-                token_budget=int(os.getenv("SACM_REMOTE_TOKEN_BUDGET", "12000")),
-                timeout_seconds=int(
-                    os.getenv("SACM_REMOTE_TIMEOUT_SECONDS", "1800")
-                ),
-                execution_context={
-                    "repository_coordinate": repository_coordinate,
-                    "source_revision": run.source_revision,
-                    "workflow_backend": "remote",
-                    "workspace_location": "customer-managed",
-                },
-            ),
-            trusted_internal=True,
+        recovery = run.recovery_state or {}
+        recovery_step_id = recovery.get("last_step_id")
+        recovery_step = (
+            runs.get_step(run_id, recovery_step_id) if recovery_step_id else None
         )
+        if recovery.get("status") == "ESCALATED":
+            raise ValueError(
+                "Run recovery is escalated and requires an explicit recovery decision."
+            )
+        if (
+            recovery.get("status") == "SCHEDULED"
+            and recovery_step is not None
+            and recovery_step.input_.get("agent_task")
+        ):
+            step = recovery_step
+            task = AgentTaskV1.model_validate(step.input_["agent_task"])
+            job_key = (
+                f"{run_id}:remote-workflow:recovery:{run.recovery_attempt_count}"
+            )
+        else:
+            scheduled = ExternalAgentService(self.db).schedule(
+                run_id,
+                ExternalAgentStepCreate(
+                    framework="sacm-remote",
+                    agent_name="workflow-executor",
+                    idempotency_key=f"{run_id}:remote-workflow",
+                    role="reasoner",
+                    objective=run.task.description,
+                    acceptance_criteria=[
+                        "Return a valid AgentResultV1 for the scheduled run step."
+                    ],
+                    context_references=[f"task:{run.task_id}", f"run:{run_id}"],
+                    allowed_tools=[],
+                    denied_tools=[],
+                    token_budget=int(os.getenv("SACM_REMOTE_TOKEN_BUDGET", "12000")),
+                    timeout_seconds=int(
+                        os.getenv("SACM_REMOTE_TIMEOUT_SECONDS", "1800")
+                    ),
+                    execution_context={
+                        "repository_coordinate": repository_coordinate,
+                        "source_revision": run.source_revision,
+                        "workflow_backend": "remote",
+                        "workspace_location": "customer-managed",
+                    },
+                ),
+                trusted_internal=True,
+            )
+            step = scheduled.step
+            task = scheduled.task
+            job_key = f"{run_id}:remote-workflow"
         capabilities = [
             item.strip()
             for item in os.getenv(
@@ -142,9 +165,9 @@ class RemoteWorkflowBackend:
             )
         job = ExecutionPlaneService(self.db).schedule(
             run_id=run_id,
-            run_step_id=scheduled.step.id,
-            task=scheduled.task,
-            idempotency_key=f"{run_id}:remote-workflow",
+            run_step_id=step.id,
+            task=task,
+            idempotency_key=job_key,
             required_capabilities=capabilities,
             required_labels=labels,
         )

@@ -49,6 +49,10 @@ class RunContextService:
                 "workflow_version": run.workflow_version,
                 "source_revision": run.source_revision,
                 "target_repo_path": run.target_repo_path,
+                "recovery_state": run.recovery_state,
+                "recovery_attempt_count": run.recovery_attempt_count,
+                "last_failure_classification": run.last_failure_classification,
+                "last_recovery_action": run.last_recovery_action,
             },
             "task": {
                 "id": task.id,

@@ -183,6 +183,10 @@ class SnapshotService:
         run.cancellation_requested = state["cancellation_requested"]
         run.started_at = self._parse_datetime(state.get("started_at"))
         run.completed_at = self._parse_datetime(state.get("completed_at"))
+        run.recovery_state = state.get("recovery_state")
+        run.recovery_attempt_count = int(state.get("recovery_attempt_count") or 0)
+        run.last_failure_classification = state.get("last_failure_classification")
+        run.last_recovery_action = state.get("last_recovery_action")
         run.updated_at = datetime.utcnow()
         for step_id, step in current.items():
             item = captured[step_id]
@@ -393,6 +397,10 @@ class SnapshotService:
                 "source_revision": run.source_revision,
                 "target_repo_path": run.target_repo_path,
                 "cancellation_requested": run.cancellation_requested,
+                "recovery_state": run.recovery_state,
+                "recovery_attempt_count": run.recovery_attempt_count,
+                "last_failure_classification": run.last_failure_classification,
+                "last_recovery_action": run.last_recovery_action,
                 "started_at": self._iso(run.started_at),
                 "completed_at": self._iso(run.completed_at),
             },

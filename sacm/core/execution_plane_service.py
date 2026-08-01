@@ -42,6 +42,7 @@ from sacm.schemas.execution_plane import (
     ExecutorRotate,
     SignedJobResult,
 )
+from sacm.schemas.recovery import FailureInputV1
 
 
 def _utcnow() -> datetime:
@@ -505,6 +506,7 @@ class ExecutionPlaneService:
         required_labels: dict[str, str] | None = None,
         max_attempts: int = 3,
         customer_deployment_id: str | None = None,
+        commit: bool = True,
     ) -> ExecutionJob:
         run = self.runs.get(run_id)
         if run is None:
@@ -596,7 +598,10 @@ class ExecutionPlaneService:
             step_id=step.id,
         )
         self.runs._checkpoint(run, f"execution_job_queued:{job.id}")
-        self.db.commit()
+        if commit:
+            self.db.commit()
+        else:
+            self.db.flush()
         self.db.refresh(job)
         return job
 
@@ -921,7 +926,14 @@ class ExecutionPlaneService:
             "key_fingerprint": submission.signing_key_fingerprint,
             "executor_id": executor.id,
         }
-        job.failure = submission.result.failure if failed else None
+        result_failure = submission.result.failure
+        serialized_failure: dict[str, Any] | None = None
+        if failed:
+            if isinstance(result_failure, FailureInputV1):
+                serialized_failure = result_failure.model_dump(mode="json")
+            elif isinstance(result_failure, dict):
+                serialized_failure = result_failure
+        job.failure = serialized_failure
         job.updated_at = now
         if failed:
             job.failed_at = now
@@ -934,35 +946,64 @@ class ExecutionPlaneService:
             f"executor:{executor.id}",
             "Execution job reached a terminal state.",
         )
-        ExternalAgentService(self.db).submit(
-            job.run_id,
-            job.run_step_id,
-            submission.result,
-            trusted_internal=True,
-        )
-        run = self.runs.get(job.run_id)
-        if run is not None:
-            self.runs._append_event(
-                run,
-                event_type="ExecutionJobFailed" if failed else "ExecutionJobCompleted",
-                actor=f"executor:{executor.id}",
-                payload={
-                    "job_id": job.id,
-                    "attempt": job.attempt,
-                    "result_hash": actual_hash,
-                    "signing_key_fingerprint": submission.signing_key_fingerprint,
-                },
-                step_id=job.run_step_id,
+        try:
+            agent_submission = ExternalAgentService(self.db).submit(
+                job.run_id,
+                job.run_step_id,
+                submission.result,
+                trusted_internal=True,
+                commit=not failed,
             )
-            self.runs._checkpoint(
-                run,
-                (
-                    f"execution_job_failed:{job.id}"
-                    if failed
-                    else f"execution_job_completed:{job.id}"
-                ),
-            )
-        self.db.commit()
+            if (
+                failed
+                and agent_submission.recovery is not None
+                and agent_submission.recovery.status == "SCHEDULED"
+            ):
+                retry_task = AgentTaskV1.model_validate(
+                    agent_submission.step.input_["agent_task"]
+                )
+                self.schedule(
+                    run_id=job.run_id,
+                    run_step_id=job.run_step_id,
+                    task=retry_task,
+                    idempotency_key=(
+                        f"{job.run_id}:remote-workflow:recovery:"
+                        f"{agent_submission.recovery.attempt}"
+                    ),
+                    required_capabilities=job.required_capabilities,
+                    required_labels=job.required_labels,
+                    max_attempts=job.max_attempts,
+                    customer_deployment_id=job.customer_deployment_id,
+                    commit=False,
+                )
+            run = self.runs.get(job.run_id)
+            if run is not None:
+                self.runs._append_event(
+                    run,
+                    event_type=(
+                        "ExecutionJobFailed" if failed else "ExecutionJobCompleted"
+                    ),
+                    actor=f"executor:{executor.id}",
+                    payload={
+                        "job_id": job.id,
+                        "attempt": job.attempt,
+                        "result_hash": actual_hash,
+                        "signing_key_fingerprint": submission.signing_key_fingerprint,
+                    },
+                    step_id=job.run_step_id,
+                )
+                self.runs._checkpoint(
+                    run,
+                    (
+                        f"execution_job_failed:{job.id}"
+                        if failed
+                        else f"execution_job_completed:{job.id}"
+                    ),
+                )
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
         self.db.refresh(job)
         return job
 

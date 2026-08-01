@@ -1043,6 +1043,16 @@ class Run(Base):
     missing_supply_chain_evidence: Mapped[list[str]] = mapped_column(
         JSON, nullable=False, default=list
     )
+    recovery_state: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    recovery_attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    last_failure_classification: Mapped[str | None] = mapped_column(
+        String, nullable=True, index=True
+    )
+    last_recovery_action: Mapped[str | None] = mapped_column(
+        String, nullable=True, index=True
+    )
 
     task: Mapped["Task"] = relationship("Task", back_populates="runs")
     project: Mapped["Project | None"] = relationship("Project", back_populates="runs")

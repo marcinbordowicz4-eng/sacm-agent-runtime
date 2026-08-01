@@ -46,9 +46,12 @@ def test_run_events_are_ordered_and_hash_chained(db):
         "previous_event_hash": events[2].previous_event_hash,
         "occurred_at": events[2].occurred_at.isoformat(),
     }
-    assert events[2].event_hash == hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    assert (
+        events[2].event_hash
+        == hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
 
 
 def test_run_rejects_invalid_state_transition(db):
@@ -134,9 +137,10 @@ def test_evidence_pack_contains_manifest_events_and_checksums(db, tmp_path):
     assert (directory / "run-manifest.json").exists()
     assert (directory / "events.jsonl").exists()
     assert (directory / "checksums.sha256").exists()
-    assert pack.manifest_hash == hashlib.sha256(
-        (directory / "run-manifest.json").read_bytes()
-    ).hexdigest()
+    assert (
+        pack.manifest_hash
+        == hashlib.sha256((directory / "run-manifest.json").read_bytes()).hexdigest()
+    )
 
 
 def test_evidence_pack_records_artifacts_and_provenance(db, tmp_path, monkeypatch):
@@ -232,7 +236,7 @@ def test_local_workflow_persists_a_verified_completed_run(db, monkeypatch):
     assert RunService(db).list_steps(run.id)[0].status == "COMPLETED"
 
 
-def test_local_workflow_reuses_failed_step_on_resume(db, monkeypatch):
+def test_local_workflow_repairs_failed_step_autonomously(db, monkeypatch):
     class FailingOrchestrator:
         calls = 0
 
@@ -243,15 +247,59 @@ def test_local_workflow_reuses_failed_step_on_resume(db, monkeypatch):
             self.__class__.calls += 1
             if self.__class__.calls == 1:
                 raise RuntimeError("temporary failure")
+            assert kwargs["recovery_context"]["decision"]["action"] == "RETRY"
             return {"task_id": task_id, "status": "done", "steps": 1}
 
     monkeypatch.setattr("sacm.core.local_workflow.Orchestrator", FailingOrchestrator)
     run = _create_run(db)
     workflow = LocalWorkflow(db)
 
-    assert workflow.execute(run.id)["status"] == "FAILED"
     assert workflow.execute(run.id)["status"] == "COMPLETED"
     assert len(RunService(db).list_steps(run.id)) == 1
+    stored = RunService(db).get(run.id)
+    assert stored.recovery_attempt_count == 1
+    assert stored.last_recovery_action == "RETRY"
+
+
+def test_external_framework_failure_schedules_typed_recovery(db):
+    run = _create_run(db)
+    service = ExternalAgentService(db)
+    scheduled = service.schedule(
+        run.id,
+        ExternalAgentStepCreate(
+            framework="codex",
+            agent_name="coder",
+            idempotency_key="codex:coder:failure",
+            role="coder",
+            objective="Fix checkout.",
+            token_budget=500,
+            timeout_seconds=120,
+        ),
+    )
+
+    result = AgentResultV1(
+        run_id=run.id,
+        step_id=scheduled.step.id,
+        status="FAILED",
+        summary="Tests failed.",
+        failure={
+            "classification": "TEST_REGRESSION",
+            "type": "TestFailure",
+            "message": "pytest checkout failed",
+        },
+    )
+    submission = service.submit(
+        run.id,
+        scheduled.step.id,
+        result,
+    )
+    repeated = service.submit(run.id, scheduled.step.id, result)
+
+    assert submission.step.status == "PENDING"
+    assert submission.recovery.action == "DEBUG"
+    assert repeated.recovery.attempt == submission.recovery.attempt
+    assert RunService(db).get(run.id).last_failure_classification == "TEST_REGRESSION"
+    assert RunService(db).get(run.id).recovery_attempt_count == 1
 
 
 def test_versioned_contracts_validate_required_fields():
@@ -321,14 +369,15 @@ def test_external_framework_step_persists_contract_usage_and_evidence(db):
     assert event.payload["agent_name"] == "langgraph:checkout-coder"
     assert event.payload["usage"][0]["input_tokens"] == 12
     assert event.payload["agent_task_contract"]["run_id"] == run.id
-    assert event.payload["agent_result_contract"]["evidence"][0]["metadata"][
-        "passed"
-    ]
-    assert service.submit(
-        run.id,
-        scheduled.step.id,
-        AgentResultV1.model_validate(submission.step.output),
-    ).step.id == scheduled.step.id
+    assert event.payload["agent_result_contract"]["evidence"][0]["metadata"]["passed"]
+    assert (
+        service.submit(
+            run.id,
+            scheduled.step.id,
+            AgentResultV1.model_validate(submission.step.output),
+        ).step.id
+        == scheduled.step.id
+    )
     assert len(EventService(db).get_recent_events(run.task_id)) == 1
 
 

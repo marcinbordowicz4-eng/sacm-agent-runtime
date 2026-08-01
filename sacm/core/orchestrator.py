@@ -33,7 +33,11 @@ class Orchestrator:
         self.observability = ObservabilityService()
 
     def run_task(
-        self, task_id: str, max_steps: int = MAX_STEPS, run_id: str | None = None
+        self,
+        task_id: str,
+        max_steps: int = MAX_STEPS,
+        run_id: str | None = None,
+        recovery_context: dict | None = None,
     ) -> dict:
         task = self.task_service.get(task_id)
         if not task:
@@ -50,11 +54,19 @@ class Orchestrator:
                 raise ValueError(f"Task {task_id} not found during execution")
 
             history = self.event_service.get_recent_events(task_id)
-            memory = self.memory_service.search(task_id, task.description, top_k=8)
+            recovery_action = (
+                (recovery_context or {}).get("decision", {}).get("action")
+            )
+            recovery_failure = (recovery_context or {}).get("failure", {})
+            query = task.description
+            if recovery_failure.get("message"):
+                query = f"{query}\nRecovery failure: {recovery_failure['message']}"
+            top_k = 16 if recovery_action == "EXPAND_CONTEXT" else 8
+            memory = self.memory_service.search(task_id, query, top_k=top_k)
             trace.record(
                 "sacm.retrieve_memory",
                 "retriever",
-                {"task_id": task_id, "query_length": len(task.description), "top_k": 8},
+                {"task_id": task_id, "query_length": len(query), "top_k": top_k},
                 {
                     "chunk_ids": [chunk.id for chunk in memory],
                     "result_count": len(memory),
@@ -71,6 +83,20 @@ class Orchestrator:
             selected_agent = self.agent_registry.get_by_index(
                 routing_result["selected_agent_index"]
             )
+            if recovery_action == "REPLAN":
+                selected_agent = next(
+                    (
+                        agent
+                        for agent in self.agent_registry.all()
+                        if agent.contract_role == "reasoner"
+                    ),
+                    selected_agent,
+                )
+            elif recovery_action == "SWITCH_MODEL":
+                selected_agent = self.agent_registry.get_by_index(
+                    routing_result["selected_agent_index"]
+                    + int((recovery_context or {}).get("decision", {}).get("attempt", 1))
+                )
             trace.record(
                 "sacm.route_agent",
                 "chain",
@@ -87,12 +113,25 @@ class Orchestrator:
                 history=history,
                 memory=memory,
             )
+            if recovery_context:
+                decision = recovery_context["decision"]
+                compiled_context.constraints = [
+                    f"Recovery action: {decision['action']}",
+                    *decision.get("instructions", []),
+                    *compiled_context.constraints,
+                ]
+                compiled_context.previous_findings = [
+                    f"Previous failure: {recovery_failure.get('message', 'unknown')}",
+                    *compiled_context.previous_findings,
+                ]
             agent_task = self.context_compiler.compile_v1(
                 run_id=run_id or f"legacy:{task_id}",
                 step_id=f"agent-{step_index + 1}",
                 agent=selected_agent,
                 context=compiled_context,
             )
+            if recovery_context:
+                agent_task.execution_context["recovery"] = recovery_context
             agent_result = selected_agent.run_v1(agent_task)
             result = selected_agent.result_from_v1(agent_result)
 

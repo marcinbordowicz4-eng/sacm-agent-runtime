@@ -24,6 +24,7 @@ from sacm.core.execution_signing import (
     sign_control_plane_payload,
 )
 from sacm.core.external_agent_service import ExternalAgentService
+from sacm.core.recovery_service import RecoveryService
 from sacm.core.run_service import RunService
 from sacm.core.snapshot_service import SnapshotService
 from sacm.core.tenancy_service import TenancyService
@@ -163,6 +164,134 @@ def test_capability_lease_and_idempotent_signed_completion(db):
     }
     assert f"execution_job_queued:{job.id}" in reasons
     assert f"execution_job_completed:{job.id}" in reasons
+
+
+def test_failed_remote_job_queues_classified_recovery(db):
+    _, project = _project(db, "owner", "acme")
+    executor, _, private_key = _executor(db, project.id, "owner", "exec-1")
+    run, step, job = _job(db, project.id)
+    service = ExecutionPlaneService(db)
+    lease = service.acquire_lease(executor)
+    assert lease is not None
+    service.start_job(executor, job.id, lease.lease_token)
+    result = AgentResultV1(
+        run_id=job.run_id,
+        step_id=job.run_step_id,
+        status="FAILED",
+        summary="Compilation failed.",
+        failure={
+            "classification": "COMPILATION",
+            "type": "CompilerError",
+            "message": "Type checking failed.",
+        },
+    )
+
+    failed = service.fail_job(
+        executor,
+        job.id,
+        _signed(private_key, executor, job, lease.lease_token, result),
+    )
+
+    queued = (
+        db.query(ExecutionJob)
+        .filter(ExecutionJob.run_id == run.id, ExecutionJob.state == "QUEUED")
+        .one()
+    )
+    assert failed.state == "FAILED"
+    assert queued.id != failed.id
+    assert queued.run_step_id == step.id
+    assert queued.payload_contract["execution_context"]["recovery"]["decision"][
+        "action"
+    ] == "REPAIR_CODE"
+    assert RunService(db).get(run.id).status == "FIXING"
+
+
+def test_failed_remote_job_recovery_rolls_back_when_requeue_fails(db, monkeypatch):
+    _, project = _project(db, "owner", "acme")
+    executor, _, private_key = _executor(db, project.id, "owner", "exec-1")
+    run, step, job = _job(db, project.id)
+    service = ExecutionPlaneService(db)
+    lease = service.acquire_lease(executor)
+    assert lease is not None
+    service.start_job(executor, job.id, lease.lease_token)
+    result = AgentResultV1(
+        run_id=job.run_id,
+        step_id=job.run_step_id,
+        status="FAILED",
+        summary="Compilation failed.",
+        failure={
+            "classification": "COMPILATION",
+            "type": "CompilerError",
+            "message": "Type checking failed.",
+        },
+    )
+
+    def fail_schedule(**kwargs):
+        raise RuntimeError("queue unavailable")
+
+    monkeypatch.setattr(service, "schedule", fail_schedule)
+    with pytest.raises(RuntimeError, match="queue unavailable"):
+        service.fail_job(
+            executor,
+            job.id,
+            _signed(private_key, executor, job, lease.lease_token, result),
+        )
+
+    db.expire_all()
+    assert db.get(ExecutionJob, job.id).state == "RUNNING"
+    assert RunService(db).get_step(run.id, step.id).status == "RUNNING"
+    assert RunService(db).get(run.id).recovery_attempt_count == 0
+
+
+def test_remote_backend_reschedules_existing_recovery_step(db):
+    _, project = _project(db, "owner", "acme")
+    run, step, job = _job(db, project.id)
+    runs = RunService(db)
+    runs.start_step(run.id, step.id)
+    runs.fail_step(
+        run.id,
+        step.id,
+        {"type": "ToolError", "message": "temporary tool failure"},
+    )
+    RecoveryService(db).handle(
+        run.id,
+        step.id,
+        {"type": "ToolError", "message": "temporary tool failure"},
+    )
+    job.state = "FAILED"
+    db.commit()
+
+    result = RemoteWorkflowBackend(db).execute(run.id)
+
+    recovery_job = db.get(ExecutionJob, result["job_id"])
+    assert recovery_job.run_step_id == step.id
+    assert recovery_job.idempotency_key.endswith(":recovery:1")
+    assert recovery_job.payload_contract["execution_context"]["recovery"]["decision"][
+        "action"
+    ] == "RETRY"
+
+
+def test_remote_backend_rejects_escalated_recovery(db, monkeypatch):
+    monkeypatch.setenv("SACM_MAX_RECOVERY_ATTEMPTS", "0")
+    _, project = _project(db, "owner", "acme")
+    run, step, job = _job(db, project.id)
+    runs = RunService(db)
+    runs.start_step(run.id, step.id)
+    runs.fail_step(
+        run.id,
+        step.id,
+        {"type": "ToolError", "message": "persistent tool failure"},
+    )
+    RecoveryService(db).handle(
+        run.id,
+        step.id,
+        {"type": "ToolError", "message": "persistent tool failure"},
+    )
+    job.state = "FAILED"
+    db.commit()
+
+    with pytest.raises(ValueError, match="requires an explicit recovery"):
+        RemoteWorkflowBackend(db).execute(run.id)
 
 
 def test_wrong_executor_token_hash_and_signature_tampering_are_rejected(db):

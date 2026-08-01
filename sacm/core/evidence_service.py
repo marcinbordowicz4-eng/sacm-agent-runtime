@@ -112,6 +112,12 @@ class EvidenceService:
             "status": run.status,
             "workflow_version": run.workflow_version,
             "source_revision": run.source_revision,
+            "recovery": {
+                "state": run.recovery_state,
+                "attempt_count": run.recovery_attempt_count,
+                "last_failure_classification": run.last_failure_classification,
+                "last_action": run.last_recovery_action,
+            },
             "event_chain_hash": events[-1].event_hash if events else None,
             "snapshot": (
                 snapshots.latest_metadata(run.id) if snapshots.available() else None

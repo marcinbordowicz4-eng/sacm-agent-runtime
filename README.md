@@ -55,6 +55,25 @@ while SACM's legacy context and result models are retained only as a migration
 adapter for existing agents. Contract results carry artifact references,
 verification evidence, provider-reported usage, decisions, and failure details.
 
+### Autonomous diagnosis and recovery
+
+Failed agent steps are normalized into `failure-report/v1` classifications:
+compilation, test regression, wrong assumption, missing context, architecture
+mismatch, bad plan, API incompatibility, environment, tool failure, or a stuck
+model. SACM deterministically chooses code repair, debugging, replanning,
+context expansion, model switching, retry, or escalation. Recovery attempts
+reuse the original task budget, are capped by `SACM_MAX_RECOVERY_ATTEMPTS`
+(default `3`), and are recorded in the hash-chained run events, snapshots,
+evidence manifest, and operational context. External agents receive the
+diagnosis and recovery instructions in the retried `AgentTaskV1`.
+
+Authenticated recovery APIs are:
+
+```text
+GET  /v1/runs/{run_id}/recovery
+POST /v1/runs/{run_id}/recover
+```
+
 ### Governed task intake
 
 Issue trackers submit a connector-neutral `TaskContractV1` to
@@ -461,6 +480,8 @@ Pass the repository path through the API or CLI when creating tasks.
 - `POST /v1/runs/{run_id}/restore`
 - `POST /v1/runs/{run_id}/replay`
 - `GET /v1/runs/{replay_run_id}/comparison`
+- `GET /v1/runs/{run_id}/recovery`
+- `POST /v1/runs/{run_id}/recover`
 - `GET /v1/tasks/{task_id}/requirements`
 - `GET /v1/tasks/{task_id}/traceability`
 - `POST /v1/tasks/{task_id}/traceability/links`

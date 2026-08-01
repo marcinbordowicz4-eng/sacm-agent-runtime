@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from sacm.core.event_service import EventService
 from sacm.core.policy_service import PolicyService
+from sacm.core.recovery_service import RecoveryService
 from sacm.core.run_service import RunService
 from sacm.core.tenancy_service import ResourceAuthorizationService
 from sacm.infrastructure.db.models import Approval, RunStep
@@ -13,6 +14,7 @@ from sacm.schemas.contracts import (
     AgentTaskV1,
     ExternalAgentStepCreate,
 )
+from sacm.schemas.recovery import RecoveryDecisionV1
 from sacm.schemas.result import AgentResult
 
 
@@ -28,6 +30,7 @@ class ExternalAgentStep:
 class ExternalAgentSubmission:
     step: RunStep
     approval_id: str | None = None
+    recovery: RecoveryDecisionV1 | None = None
 
 
 class ExternalAgentService:
@@ -101,6 +104,7 @@ class ExternalAgentService:
         actor_id: str | None = None,
         *,
         trusted_internal: bool = False,
+        commit: bool = True,
     ) -> ExternalAgentSubmission:
         self._authorize(run_id, actor_id, trusted_internal)
         step = self.runs.get_step(run_id, step_id)
@@ -114,6 +118,24 @@ class ExternalAgentService:
             raise ValueError("Agent result run_id and step_id must match the endpoint.")
 
         output = result.model_dump(mode="json")
+        submitted_failure = self._failure_dict(result)
+        if (
+            step.status == "PENDING"
+            and submitted_failure is not None
+            and (step.output or {}).get("recovery")
+        ):
+            run = self.runs.get(run_id)
+            classified = (
+                (run.recovery_state or {}).get("last_failure") if run else None
+            )
+            if not self._same_failure(classified, submitted_failure):
+                raise ValueError(
+                    "The recovery step already records a different failure."
+                )
+            return ExternalAgentSubmission(
+                step=step,
+                recovery=self._current_recovery(run),
+            )
         if step.status == "COMPLETED":
             if self._result_output(step.output) != output:
                 raise ValueError("The completed step already has a different result.")
@@ -122,13 +144,24 @@ class ExternalAgentService:
                 approval_id=(step.output or {}).get("sacm_approval_id"),
             )
         if step.status == "FAILED":
-            failure = result.failure or {
+            failure = submitted_failure or {
                 "type": "ExternalAgentFailure",
                 "message": result.summary,
             }
-            if result.status != "FAILED" or (step.output or {}).get("failure") != failure:
+            recorded = (step.output or {}).get("failure") or (step.output or {}).get(
+                "last_failure"
+            )
+            run = self.runs.get(run_id)
+            classified = (run.recovery_state or {}).get("last_failure") if run else None
+            same_failure = self._same_failure(recorded, failure) or self._same_failure(
+                classified, failure
+            )
+            if result.status != "FAILED" or not same_failure:
                 raise ValueError("The failed step cannot accept a different result.")
-            return ExternalAgentSubmission(step=step)
+            return ExternalAgentSubmission(
+                step=step,
+                recovery=self._current_recovery(run),
+            )
 
         approval = self._approval_for(step)
         if step.status == "AWAITING_APPROVAL":
@@ -147,7 +180,7 @@ class ExternalAgentService:
                     },
                 )
                 return ExternalAgentSubmission(step=failed, approval_id=approval.id)
-        self._persist_result(step, task, result)
+        self._persist_result(step, task, result, commit=commit)
         if result.status == "NEEDS_APPROVAL":
             resource = {
                 "step_id": step.id,
@@ -163,12 +196,22 @@ class ExternalAgentService:
             waiting = self.runs.await_step_approval(run_id, step_id, output)
             return ExternalAgentSubmission(step=waiting, approval_id=approval.id)
         if result.status == "FAILED":
-            failure = result.failure or {
+            agent_failure = submitted_failure or {
                 "type": "ExternalAgentFailure",
                 "message": result.summary,
             }
+            failed = self.runs.fail_step(
+                run_id,
+                step_id,
+                agent_failure,
+                commit=commit,
+            )
+            recovered, _, decision = RecoveryService(self.db).handle(
+                run_id, failed.id, agent_failure, commit=commit
+            )
             return ExternalAgentSubmission(
-                step=self.runs.fail_step(run_id, step_id, failure)
+                step=recovered,
+                recovery=decision,
             )
         if approval:
             output["sacm_approval_id"] = approval.id
@@ -178,7 +221,12 @@ class ExternalAgentService:
         )
 
     def _persist_result(
-        self, step: RunStep, task: AgentTaskV1, result: AgentResultV1
+        self,
+        step: RunStep,
+        task: AgentTaskV1,
+        result: AgentResultV1,
+        *,
+        commit: bool,
     ) -> None:
         artifacts: list[dict[str, Any]] = []
         for artifact in [*result.artifacts, *result.evidence]:
@@ -186,8 +234,7 @@ class ExternalAgentService:
             if payload not in artifacts:
                 artifacts.append(payload)
         artifacts.extend(
-            {"type": "usage", **usage.model_dump(mode="json")}
-            for usage in result.usage
+            {"type": "usage", **usage.model_dump(mode="json")} for usage in result.usage
         )
         legacy_result = AgentResult(
             agent_name=str(step.input_["agent_name"]),
@@ -205,11 +252,47 @@ class ExternalAgentService:
             legacy_result,
             task_contract=task,
             result_contract=result,
+            commit=commit,
         )
 
     def _approval_for(self, step: RunStep) -> Approval | None:
         approval_id = (step.output or {}).get("sacm_approval_id")
         return self.db.get(Approval, approval_id) if approval_id else None
+
+    @staticmethod
+    def _failure_dict(result: AgentResultV1) -> dict[str, Any] | None:
+        if result.status != "FAILED":
+            return None
+        failure = result.failure or {
+            "type": "ExternalAgentFailure",
+            "message": result.summary,
+        }
+        return (
+            failure.model_dump(mode="json")
+            if hasattr(failure, "model_dump")
+            else failure
+        )
+
+    @staticmethod
+    def _same_failure(
+        recorded: dict[str, Any] | None, submitted: dict[str, Any]
+    ) -> bool:
+        if not isinstance(recorded, dict):
+            return False
+        if recorded.get("type") != submitted.get("type"):
+            return False
+        if recorded.get("message") != submitted.get("message"):
+            return False
+        submitted_classification = submitted.get("classification")
+        return (
+            not submitted_classification
+            or recorded.get("classification") == submitted_classification
+        )
+
+    @staticmethod
+    def _current_recovery(run) -> RecoveryDecisionV1 | None:
+        decision = (run.recovery_state or {}).get("last_decision") if run else None
+        return RecoveryDecisionV1.model_validate(decision) if decision else None
 
     def _authorize(
         self, run_id: str, actor_id: str | None, trusted_internal: bool

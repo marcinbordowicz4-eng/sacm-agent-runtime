@@ -16,6 +16,10 @@
 - Durable run snapshots, restore/replay, requirement traceability, Change
   Journey history, and Evidence Pack 2.0 with hash-addressed verification,
   provenance, cost, policy, security, and coverage records.
+- Typed autonomous failure diagnosis with bounded code repair, debugging,
+  replanning, context expansion, model switching, retry, and explicit
+  escalation. Recovery decisions persist in run state, events, snapshots,
+  evidence, external agent contracts, and authenticated APIs.
 - Outcome analytics and the Mission Control dashboard for missions,
   applications, agents, policies, evidence, benchmarks, security, executor
   capacity, and operational health.
@@ -37,7 +41,7 @@
   signed evidence/jobs, an approved secret provider, and a non-local workflow
   backend.
 - Run `sacm-migrate` once before starting 0.2.0 application replicas. The
-  migration chain has one head, `c8d1e4f7a2b5`, and adds tenant, planning,
+  migration chain has one head, `d4f7a9c2e6b1`, and adds tenant, planning,
   application-context, snapshot/replay, traceability, analytics, execution
   plane, supply-chain, resilience, governance, IAM, secrets, and Jira data.
 - Customer executors must report version `0.2.0`, be re-enrolled when signing

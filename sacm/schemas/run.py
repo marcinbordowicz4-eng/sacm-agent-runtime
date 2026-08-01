@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -41,6 +41,10 @@ class RunRead(BaseModel):
     completed_at: datetime | None
     supply_chain_status: str = "NOT_EVALUATED"
     missing_supply_chain_evidence: list[str] = Field(default_factory=list)
+    recovery_state: dict[str, Any] | None = None
+    recovery_attempt_count: int = 0
+    last_failure_classification: str | None = None
+    last_recovery_action: str | None = None
 
     model_config = {"from_attributes": True}
 

@@ -2,6 +2,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from sacm.schemas.recovery import FailureInputV1
+
 AgentRole = Literal["reasoner", "coder", "reviewer", "tester", "security"]
 
 
@@ -48,7 +50,7 @@ class AgentResultV1(BaseModel):
     decisions: list[dict[str, Any]] = Field(default_factory=list)
     findings: list[dict[str, Any]] = Field(default_factory=list)
     usage: list[UsageRecord] = Field(default_factory=list)
-    failure: dict[str, Any] | None = None
+    failure: FailureInputV1 | dict[str, Any] | None = None
     actions: list[dict[str, Any]] = Field(default_factory=list)
     confidence: float = Field(default=0.0, ge=0, le=1)
     next_state_hint: str = ""

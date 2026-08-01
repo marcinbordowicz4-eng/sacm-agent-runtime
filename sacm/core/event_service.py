@@ -18,6 +18,8 @@ class EventService:
         event_type: str,
         payload: dict[str, Any],
         agent_id: Optional[str] = None,
+        *,
+        commit: bool = True,
     ) -> ContextEvent:
         task = self.db.get(Task, task_id)
         context = (
@@ -41,7 +43,10 @@ class EventService:
             created_at=datetime.utcnow(),
         )
         self.db.add(event)
-        self.db.commit()
+        if commit:
+            self.db.commit()
+        else:
+            self.db.flush()
         self.db.refresh(event)
         return event
 
@@ -62,6 +67,7 @@ class EventService:
         *,
         task_contract: Any | None = None,
         result_contract: Any | None = None,
+        commit: bool = True,
     ) -> None:
         self.save(
             task_id=task_id,
@@ -95,4 +101,5 @@ class EventService:
                     else {}
                 ),
             },
+            commit=commit,
         )

@@ -8,6 +8,7 @@ from sacm.core.auth_service import (
 )
 from sacm.core.evidence_service import EvidenceService
 from sacm.core.external_agent_service import ExternalAgentService
+from sacm.core.recovery_service import RecoveryService
 from sacm.core.run_context_service import RunContextService
 from sacm.core.run_service import RunService
 from sacm.core.snapshot_service import SnapshotService
@@ -23,6 +24,7 @@ from sacm.schemas.contracts import (
     ExternalAgentResultSubmit,
     ExternalAgentStepCreate,
 )
+from sacm.schemas.recovery import RecoveryApplyV1, RecoveryStateV1
 from sacm.schemas.run import RunCreate, RunRead, RunStepRead
 from sacm.schemas.snapshot import (
     ReplayComparisonV1,
@@ -50,16 +52,16 @@ def _run_or_404(service: RunService, run_id: str):
     return run
 
 
-def _authorize_run(
-    db: Session, run_id: str, actor: str, permission: str | None = None
-):
+def _authorize_run(db: Session, run_id: str, actor: str, permission: str | None = None):
     required_permission = permission or "runs.write"
     try:
         return ResourceAuthorizationService(db).require_run(
             run_id, actor, required_permission
         )
     except AuthorizationError as exc:
-        detail = str(exc) if permission is not None else "Insufficient organization role."
+        detail = (
+            str(exc) if permission is not None else "Insufficient organization role."
+        )
         raise HTTPException(status_code=403, detail=detail) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -89,7 +91,10 @@ def create_run(
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         if project.repository_path:
-            if payload.target_repo_path and payload.target_repo_path != project.repository_path:
+            if (
+                payload.target_repo_path
+                and payload.target_repo_path != project.repository_path
+            ):
                 raise HTTPException(
                     status_code=409,
                     detail="Run repository path must match its project repository.",
@@ -256,9 +261,7 @@ def replay_comparison(
 ) -> ReplayComparisonV1:
     _authorize_run(db, run_id, actor, "runs.read")
     try:
-        return ReplayComparisonV1.model_validate(
-            SnapshotService(db).comparison(run_id)
-        )
+        return ReplayComparisonV1.model_validate(SnapshotService(db).comparison(run_id))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -301,6 +304,55 @@ def submit_external_agent_result(
     return {
         "step": RunStepRead.model_validate(submission.step),
         "approval_id": submission.approval_id,
+        "recovery": submission.recovery,
+    }
+
+
+@router.get("/{run_id}/recovery", response_model=RecoveryStateV1)
+def get_recovery_state(
+    run_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> RecoveryStateV1:
+    run = _authorize_run(db, run_id, actor, "runs.read")
+    return RecoveryStateV1.model_validate(
+        run.recovery_state
+        or {
+            "status": "IDLE",
+            "attempt_count": 0,
+        }
+    )
+
+
+@router.post("/{run_id}/recover")
+def recover_failed_step(
+    run_id: str,
+    payload: RecoveryApplyV1,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> dict:
+    _authorize_run(db, run_id, actor, "runs.execute")
+    step = RunService(db).get_step(run_id, payload.step_id)
+    if step is None:
+        raise HTTPException(status_code=404, detail="Run step not found")
+    failure = (step.output or {}).get("failure") or (step.output or {}).get(
+        "last_failure"
+    )
+    if not failure:
+        raise HTTPException(status_code=409, detail="Run step has no recorded failure")
+    try:
+        recovered, report, decision = RecoveryService(db).handle(
+            run_id,
+            step.id,
+            failure,
+            requested_action=payload.action,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "step": RunStepRead.model_validate(recovered),
+        "failure": report,
+        "recovery": decision,
     }
 
 

@@ -25,10 +25,17 @@ _ALLOWED_TRANSITIONS = {
     "AWAITING_APPROVAL": {"IMPLEMENTING", "CANCELLED"},
     "IMPLEMENTING": {"REVIEWING", "FAILED", "CANCELLED"},
     "REVIEWING": {"FIXING", "TESTING", "FAILED", "CANCELLED"},
-    "FIXING": {"REVIEWING", "FAILED", "CANCELLED"},
+    "FIXING": {"IMPLEMENTING", "REVIEWING", "FAILED", "CANCELLED"},
     "TESTING": {"FIXING", "DELIVERING", "FAILED", "CANCELLED"},
     "DELIVERING": {"COMPLETED", "FAILED", "CANCELLED"},
-    "FAILED": {"PLANNING", "IMPLEMENTING", "REVIEWING", "TESTING", "CANCELLED"},
+    "FAILED": {
+        "PLANNING",
+        "IMPLEMENTING",
+        "REVIEWING",
+        "FIXING",
+        "TESTING",
+        "CANCELLED",
+    },
     "COMPLETED": set(),
     "CANCELLED": set(),
 }
@@ -273,9 +280,7 @@ class RunService:
         if step.status == "AWAITING_APPROVAL":
             return step
         if step.status not in {"PENDING", "RUNNING"}:
-            raise ValueError(
-                f"Step {step_id} cannot await approval from {step.status}"
-            )
+            raise ValueError(f"Step {step_id} cannot await approval from {step.status}")
         step.status = "AWAITING_APPROVAL"
         step.output = output
         self._append_event(
@@ -291,7 +296,12 @@ class RunService:
         return step
 
     def fail_step(
-        self, run_id: str, step_id: str, failure: dict[str, Any]
+        self,
+        run_id: str,
+        step_id: str,
+        failure: dict[str, Any],
+        *,
+        commit: bool = True,
     ) -> RunStep:
         run = self._require(run_id)
         step = self._require_step(run_id, step_id)
@@ -306,7 +316,10 @@ class RunService:
             step_id=step.id,
         )
         self._checkpoint(run, f"step_failed:{step.id}")
-        self.db.commit()
+        if commit:
+            self.db.commit()
+        else:
+            self.db.flush()
         self.db.refresh(step)
         return step
 
@@ -368,6 +381,109 @@ class RunService:
         self.db.refresh(step)
         return step
 
+    def schedule_recovery(
+        self,
+        run_id: str,
+        step_id: str,
+        failure: dict[str, Any],
+        decision: dict[str, Any],
+        *,
+        commit: bool = True,
+    ) -> RunStep:
+        run = self._require(run_id)
+        step = self._require_step(run_id, step_id)
+        if step.status != "FAILED":
+            raise ValueError("Recovery requires a failed step.")
+        attempt = int(decision["attempt"])
+        history = list((run.recovery_state or {}).get("history", []))
+        history.append(
+            {
+                "attempt": attempt,
+                "step_id": step.id,
+                "failure": failure,
+                "decision": decision,
+                "recorded_at": _utcnow().isoformat(),
+            }
+        )
+        run.recovery_attempt_count = attempt
+        run.last_failure_classification = failure["classification"]
+        run.last_recovery_action = decision["action"]
+        run.recovery_state = {
+            "schema_version": "recovery-state/v1",
+            "status": decision["status"],
+            "attempt_count": attempt,
+            "last_step_id": step.id,
+            "last_failure": failure,
+            "last_decision": decision,
+            "history": history,
+        }
+        self._append_event(
+            run,
+            event_type="FailureClassified",
+            actor="system",
+            payload=failure,
+            step_id=step.id,
+        )
+        self._append_event(
+            run,
+            event_type="RecoveryPlanned",
+            actor="system",
+            payload=decision,
+            step_id=step.id,
+        )
+        now = _utcnow()
+        if decision["status"] == "ESCALATED":
+            run.status = "FAILED"
+            run.completed_at = now
+            self._append_event(
+                run,
+                event_type="RecoveryEscalated",
+                actor="system",
+                payload=decision,
+                step_id=step.id,
+            )
+        else:
+            task = dict(step.input_.get("agent_task") or {})
+            execution_context = dict(task.get("execution_context") or {})
+            execution_context["recovery"] = {
+                "failure": failure,
+                "decision": decision,
+            }
+            if task:
+                task["execution_context"] = execution_context
+                step.input_ = {**step.input_, "agent_task": task}
+            else:
+                step.input_ = {
+                    **step.input_,
+                    "recovery": {"failure": failure, "decision": decision},
+                }
+            step.status = "PENDING"
+            step.retry_count += 1
+            step.started_at = None
+            step.completed_at = None
+            step.output = {"last_failure": failure, "recovery": decision}
+            run.status = decision["target_run_status"]
+            run.completed_at = None
+            self._append_event(
+                run,
+                event_type="RecoveryScheduled",
+                actor="system",
+                payload={
+                    **decision,
+                    "step_name": step.name,
+                    "retry_count": step.retry_count,
+                },
+                step_id=step.id,
+            )
+        run.updated_at = now
+        self._checkpoint(run, f"recovery:{decision['action'].lower()}")
+        if commit:
+            self.db.commit()
+        else:
+            self.db.flush()
+        self.db.refresh(step)
+        return step
+
     def recover_interrupted(self, run_id: str) -> Run:
         """Make an interrupted in-process execution resumable after a restart."""
         run = self._require(run_id)
@@ -390,7 +506,9 @@ class RunService:
                 run_id,
                 "FAILED",
                 "RunRecoveryDetected",
-                payload={"interrupted_step_ids": [step.id for step in interrupted_steps]},
+                payload={
+                    "interrupted_step_ids": [step.id for step in interrupted_steps]
+                },
             )
         return run
 
