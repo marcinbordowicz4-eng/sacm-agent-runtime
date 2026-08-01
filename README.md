@@ -306,6 +306,17 @@ non-secret metadata. External links are retained across derived refreshes.
 per-target metrics plus the complete explicit list of uncovered requirements.
 Source-only BDD registration links do not count as implementation coverage.
 
+Verifier V2 replaces model confidence as the completion authority for tasks
+with mandatory acceptance criteria. Its durable `verification-matrix/v2`
+requires every criterion to map to implementation, tests, executed commands,
+and hash-valid evidence; a deterministic build; a focused regression test that
+fails on the pre-fix revision and passes after the change; affected-area
+regression; API/schema compatibility; security verification; test-integrity
+proof; and complete evidence. Tool results must carry deterministic provenance
+and a zero exit code. Removed tests, weakened assertions, missing criteria, or
+self-reported model success block completion. The matrix is available through
+`GET /v1/runs/{run_id}/verification` and is embedded in Evidence Pack 2.0.
+
 Evidence generation retains the existing `run-manifest/v2` fields and adds the
 backward-compatible Evidence Pack 2.0 sections: task contract/source and
 readiness, application graph hash/impact/risk, execution plan and portable
@@ -503,6 +514,7 @@ Pass the repository path through the API or CLI when creating tasks.
 - `GET /v1/runs/{replay_run_id}/comparison`
 - `GET /v1/runs/{run_id}/recovery`
 - `POST /v1/runs/{run_id}/recover`
+- `GET /v1/runs/{run_id}/verification`
 - `GET /v1/tasks/{task_id}/requirements`
 - `GET /v1/tasks/{task_id}/traceability`
 - `POST /v1/tasks/{task_id}/traceability/links`

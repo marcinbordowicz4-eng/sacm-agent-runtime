@@ -6,6 +6,7 @@ from sacm.core.evidence_service import EvidenceService
 from sacm.core.orchestrator import Orchestrator
 from sacm.core.recovery_service import RecoveryService
 from sacm.core.run_service import RunService
+from sacm.infrastructure.db.models import EvidencePack
 
 
 class LocalWorkflow:
@@ -87,14 +88,48 @@ class LocalWorkflow:
                 self.runs.transition(
                     run_id, "DELIVERING", "WorkflowDelivering", step_id=step.id
                 )
-                EvidenceService(self.db).build(run_id, trusted_internal=True)
+                evidence_service = EvidenceService(self.db)
+                evidence_pack = (
+                    self.db.query(EvidencePack)
+                    .filter(EvidencePack.run_id == run_id)
+                    .order_by(EvidencePack.created_at.desc(), EvidencePack.id.desc())
+                    .first()
+                )
+                if evidence_pack is None:
+                    evidence_pack = evidence_service.build(
+                        run_id,
+                        trusted_internal=True,
+                    )
+                evidence_verification = evidence_service.verify(
+                    run_id,
+                    evidence_pack.id,
+                    trusted_internal=True,
+                )
+                if evidence_verification.status == "INVALID":
+                    raise RuntimeError(
+                        "Evidence Pack integrity verification failed: "
+                        + "; ".join(evidence_verification.errors)
+                    )
                 completed = self.runs.transition(
                     run_id,
                     "COMPLETED",
                     "RunCompleted",
                     step_id=step.id,
                 )
-                EvidenceService(self.db).build(run_id, trusted_internal=True)
+                final_pack = evidence_service.build(
+                    run_id,
+                    trusted_internal=True,
+                )
+                final_verification = evidence_service.verify(
+                    run_id,
+                    final_pack.id,
+                    trusted_internal=True,
+                )
+                if final_verification.status == "INVALID":
+                    raise RuntimeError(
+                        "Final Evidence Pack integrity verification failed: "
+                        + "; ".join(final_verification.errors)
+                    )
                 analytics_error = self._refresh_analytics(run_id)
                 if analytics_error:
                     return {

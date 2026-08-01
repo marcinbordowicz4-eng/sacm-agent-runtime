@@ -24,6 +24,9 @@
   deterministic ecosystem parsers, graph-linked evidence, calibrated
   confidence, low-confidence escalation, stable diagnosis fingerprints, and
   duplicate patch/root-cause retry prevention.
+- Requirement-level Verifier V2 with a deterministic completion matrix,
+  pre-fix regression proof, contract/security/test-integrity gates, mandatory
+  acceptance-criteria coverage, durable APIs, and Evidence Pack integration.
 - Explainable outcome-adaptive agent routing that combines the PyTorch prior
   with real execution outcomes, project/task similarity, cost, latency,
   retries, verification, risk, and failure patterns while retaining a

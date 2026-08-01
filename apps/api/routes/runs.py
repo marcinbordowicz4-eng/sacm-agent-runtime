@@ -18,7 +18,7 @@ from sacm.core.tenancy_service import (
     TenancyService,
 )
 from sacm.core.workflow_backend import workflow_backend
-from sacm.infrastructure.db.models import EvidencePack
+from sacm.infrastructure.db.models import ContextEvent, EvidencePack
 from sacm.infrastructure.db.session import get_db
 from sacm.schemas.contracts import (
     ExternalAgentResultSubmit,
@@ -36,6 +36,7 @@ from sacm.schemas.snapshot import (
     SnapshotRestoreV1,
 )
 from sacm.schemas.supply_chain import VerificationResultV1
+from sacm.schemas.verification import VerificationMatrixV2
 
 router = APIRouter()
 
@@ -119,6 +120,37 @@ def get_run(
     db: Session = Depends(get_db),
 ) -> RunRead:
     return RunRead.model_validate(_authorize_run(db, run_id, actor, "runs.read"))
+
+
+@router.get(
+    "/{run_id}/verification",
+    response_model=VerificationMatrixV2,
+)
+def get_run_verification(
+    run_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> VerificationMatrixV2:
+    run = _authorize_run(db, run_id, actor, "runs.read")
+    events = (
+        db.query(ContextEvent)
+        .filter(
+            ContextEvent.task_id == run.task_id,
+            ContextEvent.event_type == "verification_matrix_v2",
+        )
+        .order_by(ContextEvent.created_at.desc(), ContextEvent.id.desc())
+        .all()
+    )
+    event = next(
+        (item for item in events if item.payload.get("run_id") == run_id),
+        None,
+    )
+    if event is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Verification matrix not found.",
+        )
+    return VerificationMatrixV2.model_validate(event.payload)
 
 
 @router.get("/{run_id}/context")

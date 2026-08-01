@@ -6,6 +6,7 @@ from sacm.core.agent_registry import AgentRegistry
 from sacm.core.context_compiler import ContextCompiler
 from sacm.core.embedding_service import EmbeddingService
 from sacm.core.event_service import EventService
+from sacm.core.evidence_service import EvidenceService
 from sacm.core.feedback_service import FeedbackService
 from sacm.core.memory_service import MemoryService
 from sacm.core.observability import ObservabilityService
@@ -28,7 +29,7 @@ class Orchestrator:
         self.agent_registry = AgentRegistry()
         self.context_compiler = ContextCompiler()
         self.router_service = RouterService()
-        self.verifier = Verifier()
+        self.verifier = Verifier(db)
         self.embedding_service = EmbeddingService()
         self.feedback_service = FeedbackService(db, self.router_service)
         self.observability = ObservabilityService()
@@ -192,7 +193,61 @@ class Orchestrator:
             self.memory_service.add_from_agent_result(task_id, result)
             self.state_service.update_belief_state(task_id, routing_result["next_belief"])
 
-            done = self.verifier.is_done(task, result)
+            verification = self.verifier.evaluate(
+                task,
+                result,
+                run_id=run_id,
+            )
+            self.event_service.save(
+                task_id,
+                "verification_matrix_v2",
+                verification.model_dump(mode="json"),
+            )
+            if (
+                verification.strict
+                and verification.technical_complete
+                and run_id is not None
+            ):
+                evidence = EvidenceService(self.db)
+                provisional_pack = evidence.build(
+                    run_id,
+                    trusted_internal=True,
+                )
+                provisional_result = evidence.verify(
+                    run_id,
+                    provisional_pack.id,
+                    trusted_internal=True,
+                )
+                verification = self.verifier.finalize_evidence(
+                    verification,
+                    evidence_valid=provisional_result.status != "INVALID",
+                )
+                self.event_service.save(
+                    task_id,
+                    "verification_matrix_v2",
+                    verification.model_dump(mode="json"),
+                )
+                if verification.complete:
+                    final_pack = evidence.build(
+                        run_id,
+                        trusted_internal=True,
+                    )
+                    final_result = evidence.verify(
+                        run_id,
+                        final_pack.id,
+                        trusted_internal=True,
+                    )
+                    if final_result.status == "INVALID":
+                        verification = self.verifier.finalize_evidence(
+                            verification,
+                            evidence_valid=False,
+                        )
+                        self.event_service.save(
+                            task_id,
+                            "verification_matrix_v2",
+                            verification.model_dump(mode="json"),
+                        )
+            done = verification.complete
             trace.record(
                 "sacm.agent_result",
                 "chain",
@@ -200,7 +255,9 @@ class Orchestrator:
                 {
                     "next_state": result.next_state_hint,
                     "confidence": result.confidence,
-                    "verified": self.verifier.has_successful_verification(result),
+                    "verified": done,
+                    "verification_strict": verification.strict,
+                    "verification_blockers": verification.blocking_reasons,
                 },
             )
 

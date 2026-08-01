@@ -132,6 +132,10 @@ class EvidenceService:
             "policy_security_approvals": policy_security_approvals,
             "delivery": delivery_evidence,
             "usage_cost": costs,
+            "verification_matrix": self._verification_matrix(
+                run.task_id,
+                run.id,
+            ),
             "traceability": traceability.model_dump(mode="json"),
             "artifacts": artifact_inventory,
             "supply_chain": {
@@ -616,6 +620,29 @@ class EvidenceService:
         path.write_text(
             json.dumps(EvidenceService._sanitize(content), indent=2, sort_keys=True),
             encoding="utf-8",
+        )
+
+    def _verification_matrix(
+        self,
+        task_id: str,
+        run_id: str,
+    ) -> dict[str, Any] | None:
+        events = (
+            self.db.query(ContextEvent)
+            .filter(
+                ContextEvent.task_id == task_id,
+                ContextEvent.event_type == "verification_matrix_v2",
+            )
+            .order_by(ContextEvent.created_at.desc(), ContextEvent.id.desc())
+            .all()
+        )
+        return next(
+            (
+                event.payload
+                for event in events
+                if event.payload.get("run_id") == run_id
+            ),
+            None,
         )
 
     def _agent_records(self, task_id: str) -> list[dict[str, Any]]:
