@@ -56,7 +56,7 @@ def test_application_graph_contains_symbols_calls_and_tests(db, tmp_path, monkey
 
     context = ApplicationContextService(db).build(task.id)
 
-    assert context.scanner_version == "deterministic-scanner/v2"
+    assert context.scanner_version == "deterministic-scanner/v2.1"
     symbols = {node.label: node for node in context.graph.nodes}
     assert symbols["create_order"].type == "symbol"
     assert symbols["test_create_order"].type == "test_symbol"

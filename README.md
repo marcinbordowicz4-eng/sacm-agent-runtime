@@ -212,6 +212,23 @@ run owned by the same task, and is compacted together with excerpts under the
 agent token budget. `EXPAND_CONTEXT` recovery increases traversal depth and
 node limits without discarding prior failure evidence.
 
+Context Engine V2.1 can merge canonical semantic facts from an optional SCIP
+index without treating syntax heuristics as type-aware resolution. Generate a
+repository-local JSON index with:
+
+```text
+scip print --json index.scip > .sacm/index.scip.json
+```
+
+`SACM_SCIP_JSON_PATH` may select another safe repository-relative path. SACM
+validates canonical document paths, isolates document-local symbols, preserves
+definition/reference/test and implementation/type relationships, records the
+indexer name/version and SHA-256 fingerprint, and caps index size, documents,
+symbols, occurrences, and relationships. When no valid index exists, the
+existing deterministic syntax graph remains an explicit fallback. This adapter
+contract also permits future LSP or Sourcegraph-backed implementations without
+changing context-package consumers.
+
 Authenticated package APIs are:
 
 ```text

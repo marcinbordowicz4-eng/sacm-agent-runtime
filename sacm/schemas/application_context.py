@@ -76,7 +76,9 @@ class ApplicationContextRead(BaseModel):
     schema_version: Literal["application-context/v1"]
     status: Literal["complete", "partial", "unavailable"]
     scanner_version: Literal[
-        "deterministic-scanner/v1", "deterministic-scanner/v2"
+        "deterministic-scanner/v1",
+        "deterministic-scanner/v2",
+        "deterministic-scanner/v2.1",
     ]
     graph: ApplicationGraph
     graph_hash: str

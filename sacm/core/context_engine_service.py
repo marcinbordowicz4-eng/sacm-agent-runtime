@@ -270,6 +270,7 @@ class ContextEngineService:
     @staticmethod
     def _role_priority(role: str) -> dict[str, int]:
         common = {
+            "semantic_symbol": 0,
             "test_symbol": 0,
             "symbol": 1,
             "api_route": 2,

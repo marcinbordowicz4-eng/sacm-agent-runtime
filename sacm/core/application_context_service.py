@@ -13,6 +13,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from sacm.adapters.code_intelligence import ScipJsonAdapter
 from sacm.adapters.repository_adapter import RepositoryAdapter, RepositoryError
 from sacm.infrastructure.db.models import (
     ApplicationContext,
@@ -34,7 +35,7 @@ MAX_GRAPH_NODES = 20_000
 MAX_GRAPH_EDGES = 40_000
 MAX_FILE_BYTES = 1_000_000
 MAX_IMPACT_NODES = 100
-SCANNER_VERSION = "deterministic-scanner/v2"
+SCANNER_VERSION = "deterministic-scanner/v2.1"
 
 EXCLUDED_DIRECTORIES = {
     ".git",
@@ -225,11 +226,13 @@ class ScanResult:
     api_route_count: int = 0
     schema_count: int = 0
     scan_errors: list[str] = field(default_factory=list)
+    code_intelligence: dict[str, Any] = field(default_factory=dict)
     truncated: bool = False
 
     def metadata(self) -> dict[str, Any]:
         return {
             "api_route_count": self.api_route_count,
+            "code_intelligence": self.code_intelligence,
             "dependency_count": self.dependency_count,
             "excluded_directories": sorted(EXCLUDED_DIRECTORIES),
             "module_count": self.module_count,
@@ -665,6 +668,12 @@ class ApplicationContextService:
             linked_symbol_id = file_symbol_ids.get((path, symbol_name))
             if linked_symbol_id:
                 graph.add_edge(contract_id, linked_symbol_id, "represented_by")
+        result.code_intelligence = ScipJsonAdapter().merge(
+            adapter.repo_path,
+            repository_id,
+            graph,
+            file_ids,
+        ).metadata()
         result.module_count = len(module_ids)
         result.truncated = result.truncated or graph.truncated
         return result

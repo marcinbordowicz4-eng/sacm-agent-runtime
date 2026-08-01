@@ -31,6 +31,10 @@
   role-aware directed traversal, run-isolated and hash-addressed context
   packages, safe repository excerpts, execution-time graph refresh, bounded
   token delivery, durable APIs, and expanded recovery context.
+- Context Engine V2.1 optional SCIP ingestion with stable semantic symbol
+  identities, document-local symbol isolation, typed definitions/references,
+  tests and relationships, index fingerprints, bounded untrusted-input
+  handling, and deterministic syntax fallback.
 - Explainable outcome-adaptive agent routing that combines the PyTorch prior
   with real execution outcomes, project/task similarity, cost, latency,
   retries, verification, risk, and failure patterns while retaining a
