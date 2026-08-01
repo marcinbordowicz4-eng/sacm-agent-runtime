@@ -889,6 +889,10 @@ class ExecutionPlaneService:
             if job.state == expected_state and hmac.compare_digest(
                 job.result_hash or "", actual_hash
             ):
+                if (job.result_signature_metadata or {}).get(
+                    "analytics_status"
+                ) == "FAILED":
+                    self._refresh_job_analytics(job)
                 return job
             raise ExecutionConflict("The job already has a different terminal result.")
         if job.state not in {"LEASED", "RUNNING"}:
@@ -1004,8 +1008,35 @@ class ExecutionPlaneService:
         except Exception:
             self.db.rollback()
             raise
+        analytics_error = (
+            ExternalAgentService(self.db).refresh_analytics(job.run_id)
+            if failed
+            else agent_submission.analytics_error
+        )
+        if analytics_error:
+            job.result_signature_metadata = {
+                **(job.result_signature_metadata or {}),
+                "analytics_status": "FAILED",
+                "analytics_error": analytics_error,
+            }
+            self.db.commit()
         self.db.refresh(job)
         return job
+
+    def _refresh_job_analytics(self, job: ExecutionJob) -> None:
+        analytics_error = ExternalAgentService(self.db).refresh_analytics(job.run_id)
+        metadata = dict(job.result_signature_metadata or {})
+        if analytics_error:
+            metadata.update(
+                analytics_status="FAILED",
+                analytics_error=analytics_error,
+            )
+        else:
+            metadata["analytics_status"] = "COMPLETED"
+            metadata.pop("analytics_error", None)
+        job.result_signature_metadata = metadata
+        self.db.commit()
+        self.db.refresh(job)
 
     def _owned_job(
         self,

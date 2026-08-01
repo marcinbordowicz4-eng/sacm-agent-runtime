@@ -166,6 +166,41 @@ def test_capability_lease_and_idempotent_signed_completion(db):
     assert f"execution_job_completed:{job.id}" in reasons
 
 
+def test_remote_completion_persists_and_retries_analytics_failure(db, monkeypatch):
+    _, project = _project(db, "owner", "acme")
+    executor, _, private_key = _executor(db, project.id, "owner", "exec-1")
+    _, _, job = _job(db, project.id)
+    service = ExecutionPlaneService(db)
+    lease = service.acquire_lease(executor)
+    assert lease is not None
+    service.start_job(executor, job.id, lease.lease_token)
+    result = AgentResultV1(
+        run_id=job.run_id,
+        step_id=job.run_step_id,
+        status="COMPLETED",
+        summary="Remote execution completed.",
+        confidence=0.9,
+    )
+    submission = _signed(private_key, executor, job, lease.lease_token, result)
+    outcomes = iter(["analytics unavailable", None])
+    monkeypatch.setattr(
+        ExternalAgentService,
+        "refresh_analytics",
+        lambda *_: next(outcomes),
+    )
+
+    completed = service.complete_job(executor, job.id, submission)
+    assert completed.result_signature_metadata["analytics_status"] == "FAILED"
+    assert (
+        completed.result_signature_metadata["analytics_error"]
+        == "analytics unavailable"
+    )
+
+    repeated = service.complete_job(executor, job.id, submission)
+    assert repeated.result_signature_metadata["analytics_status"] == "COMPLETED"
+    assert "analytics_error" not in repeated.result_signature_metadata
+
+
 def test_failed_remote_job_queues_classified_recovery(db):
     _, project = _project(db, "owner", "acme")
     executor, _, private_key = _executor(db, project.id, "owner", "exec-1")

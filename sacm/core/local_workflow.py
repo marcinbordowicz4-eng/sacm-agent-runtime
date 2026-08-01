@@ -95,7 +95,20 @@ class LocalWorkflow:
                     step_id=step.id,
                 )
                 EvidenceService(self.db).build(run_id, trusted_internal=True)
-                return {"run_id": run_id, "status": completed.status, "output": output}
+                analytics_error = self._refresh_analytics(run_id)
+                if analytics_error:
+                    return {
+                        "run_id": run_id,
+                        "status": completed.status,
+                        "output": output,
+                        "analytics": {"status": "FAILED", "error": analytics_error},
+                    }
+                return {
+                    "run_id": run_id,
+                    "status": completed.status,
+                    "output": output,
+                    "analytics": {"status": "COMPLETED"},
+                }
             except Exception as exc:
                 failure = {"type": exc.__class__.__name__, "message": str(exc)}
                 self.runs.fail_step(run_id, step.id, failure)
@@ -109,6 +122,16 @@ class LocalWorkflow:
                         "error": str(exc),
                         "recovery": decision.model_dump(mode="json"),
                     }
+
+    def _refresh_analytics(self, run_id: str) -> str | None:
+        from sacm.core.analytics_service import AnalyticsService
+
+        try:
+            AnalyticsService(self.db).recompute_run(run_id)
+        except Exception as exc:
+            self.db.rollback()
+            return str(exc)
+        return None
 
     @staticmethod
     def _recovery_context(step) -> dict[str, Any] | None:

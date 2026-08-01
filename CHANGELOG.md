@@ -20,6 +20,10 @@
   replanning, context expansion, model switching, retry, and explicit
   escalation. Recovery decisions persist in run state, events, snapshots,
   evidence, external agent contracts, and authenticated APIs.
+- Explainable outcome-adaptive agent routing that combines the PyTorch prior
+  with real execution outcomes, project/task similarity, cost, latency,
+  retries, verification, risk, and failure patterns while retaining a
+  minimum-sample deterministic fallback.
 - Outcome analytics and the Mission Control dashboard for missions,
   applications, agents, policies, evidence, benchmarks, security, executor
   capacity, and operational health.

@@ -305,6 +305,7 @@ def submit_external_agent_result(
         "step": RunStepRead.model_validate(submission.step),
         "approval_id": submission.approval_id,
         "recovery": submission.recovery,
+        "analytics_error": submission.analytics_error,
     }
 
 

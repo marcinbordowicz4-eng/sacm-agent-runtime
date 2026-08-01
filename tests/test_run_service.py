@@ -10,6 +10,7 @@ from sacm.core.local_workflow import LocalWorkflow
 from sacm.core.run_service import RunService
 from sacm.core.workflow_backend import LocalWorkflowBackend, workflow_backend
 from sacm.core.workspace import WorkspaceManager, WorkspaceRef
+from sacm.infrastructure.db.models import AgentOutcomeAnalytics
 from sacm.schemas.context import AgentContext
 from sacm.schemas.contracts import (
     AgentResultV1,
@@ -261,6 +262,31 @@ def test_local_workflow_repairs_failed_step_autonomously(db, monkeypatch):
     assert stored.last_recovery_action == "RETRY"
 
 
+def test_local_workflow_does_not_reopen_completed_run_on_analytics_failure(
+    db, monkeypatch
+):
+    class FakeOrchestrator:
+        def __init__(self, _db):
+            pass
+
+        def run_task(self, task_id, **kwargs):
+            return {"task_id": task_id, "status": "done", "steps": 1}
+
+    monkeypatch.setattr("sacm.core.local_workflow.Orchestrator", FakeOrchestrator)
+    monkeypatch.setattr(
+        "sacm.core.analytics_service.AnalyticsService.recompute_run",
+        lambda *_: (_ for _ in ()).throw(RuntimeError("analytics unavailable")),
+    )
+    run = _create_run(db)
+
+    result = LocalWorkflow(db).execute(run.id)
+
+    assert result["status"] == "COMPLETED"
+    assert result["analytics"]["status"] == "FAILED"
+    assert RunService(db).get(run.id).status == "COMPLETED"
+    assert RunService(db).list_steps(run.id)[0].status == "COMPLETED"
+
+
 def test_external_framework_failure_schedules_typed_recovery(db):
     run = _create_run(db)
     service = ExternalAgentService(db)
@@ -379,6 +405,12 @@ def test_external_framework_step_persists_contract_usage_and_evidence(db):
         == scheduled.step.id
     )
     assert len(EventService(db).get_recent_events(run.task_id)) == 1
+    assert (
+        db.query(AgentOutcomeAnalytics)
+        .filter(AgentOutcomeAnalytics.run_id == run.id)
+        .count()
+        == 1
+    )
 
 
 def test_external_framework_step_is_idempotent_and_rejects_payload_change(db):

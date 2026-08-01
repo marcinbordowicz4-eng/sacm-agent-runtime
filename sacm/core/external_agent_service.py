@@ -31,6 +31,7 @@ class ExternalAgentSubmission:
     step: RunStep
     approval_id: str | None = None
     recovery: RecoveryDecisionV1 | None = None
+    analytics_error: str | None = None
 
 
 class ExternalAgentService:
@@ -209,16 +210,30 @@ class ExternalAgentService:
             recovered, _, decision = RecoveryService(self.db).handle(
                 run_id, failed.id, agent_failure, commit=commit
             )
+            if commit:
+                analytics_error = self.refresh_analytics(run_id)
+            else:
+                analytics_error = None
             return ExternalAgentSubmission(
                 step=recovered,
                 recovery=decision,
+                analytics_error=analytics_error,
             )
         if approval:
             output["sacm_approval_id"] = approval.id
-        return ExternalAgentSubmission(
+        submission = ExternalAgentSubmission(
             step=self.runs.complete_step(run_id, step_id, output),
             approval_id=approval.id if approval else None,
         )
+        if commit:
+            analytics_error = self.refresh_analytics(run_id)
+            return ExternalAgentSubmission(
+                step=submission.step,
+                approval_id=submission.approval_id,
+                recovery=submission.recovery,
+                analytics_error=analytics_error,
+            )
+        return submission
 
     def _persist_result(
         self,
@@ -293,6 +308,16 @@ class ExternalAgentService:
     def _current_recovery(run) -> RecoveryDecisionV1 | None:
         decision = (run.recovery_state or {}).get("last_decision") if run else None
         return RecoveryDecisionV1.model_validate(decision) if decision else None
+
+    def refresh_analytics(self, run_id: str) -> str | None:
+        from sacm.core.analytics_service import AnalyticsService
+
+        try:
+            AnalyticsService(self.db).recompute_run(run_id)
+        except Exception as exc:
+            self.db.rollback()
+            return str(exc)
+        return None
 
     def _authorize(
         self, run_id: str, actor_id: str | None, trusted_internal: bool

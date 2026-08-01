@@ -9,6 +9,7 @@ from sacm.core.event_service import EventService
 from sacm.core.feedback_service import FeedbackService
 from sacm.core.memory_service import MemoryService
 from sacm.core.observability import ObservabilityService
+from sacm.core.outcome_router_service import OutcomeRouterService
 from sacm.core.router import RouterService
 from sacm.core.state_service import StateService
 from sacm.core.task_service import TaskService
@@ -31,6 +32,11 @@ class Orchestrator:
         self.embedding_service = EmbeddingService()
         self.feedback_service = FeedbackService(db, self.router_service)
         self.observability = ObservabilityService()
+        self.outcome_router = OutcomeRouterService(
+            db,
+            registry=self.agent_registry,
+            neural_router=self.router_service,
+        )
 
     def run_task(
         self,
@@ -80,7 +86,25 @@ class Orchestrator:
                 context_vector=context_vector,
                 belief_state=belief_state,
             )
-            selected_agent = self.agent_registry.get_by_index(
+            risk_level = (
+                str(task.application_context.risk_analysis.get("level"))
+                if task.application_context
+                and task.application_context.risk_analysis.get("level")
+                else None
+            )
+            outcome_decision = self.outcome_router.rank(
+                task,
+                context_vector,
+                belief_state,
+                risk_level=risk_level,
+                previous_failure_classification=(
+                    recovery_failure.get("classification")
+                ),
+                neural_result=routing_result,
+            )
+            selected_agent = self.agent_registry.get(
+                outcome_decision.selected_agent_name
+            ) or self.agent_registry.get_by_index(
                 routing_result["selected_agent_index"]
             )
             if recovery_action == "REPLAN":
@@ -97,13 +121,36 @@ class Orchestrator:
                     routing_result["selected_agent_index"]
                     + int((recovery_context or {}).get("decision", {}).get("attempt", 1))
                 )
+            executed_agent_index = self.agent_registry.names().index(
+                selected_agent.name
+            )
             trace.record(
                 "sacm.route_agent",
                 "chain",
                 {"step": step_index + 1},
                 {
                     "selected_agent": selected_agent.name,
-                    "selected_agent_index": routing_result["selected_agent_index"],
+                    "selected_agent_index": executed_agent_index,
+                    "router_strategy": outcome_decision.strategy,
+                    "router_score": next(
+                        candidate.score
+                        for candidate in outcome_decision.candidates
+                        if candidate.agent_name == selected_agent.name
+                    ),
+                },
+            )
+            self.event_service.save(
+                task_id,
+                "router_decision",
+                {
+                    "schema_version": outcome_decision.schema_version,
+                    "selected_agent_name": selected_agent.name,
+                    "strategy": outcome_decision.strategy,
+                    "minimum_samples": outcome_decision.minimum_samples,
+                    "risk_level": outcome_decision.risk_level,
+                    "task_tags": outcome_decision.task_tags,
+                    "fallback_reason": outcome_decision.fallback_reason,
+                    "outcome_semantics": outcome_decision.outcome_semantics,
                 },
             )
 
@@ -161,7 +208,7 @@ class Orchestrator:
             self.feedback_service.record(
                 context_vector=context_vector,
                 belief_state=belief_state,
-                selected_agent_index=routing_result["selected_agent_index"],
+                selected_agent_index=executed_agent_index,
                 agent_name=selected_agent.name,
                 result=result,
                 task_done=done,

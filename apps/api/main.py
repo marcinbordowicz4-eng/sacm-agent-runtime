@@ -87,6 +87,12 @@ app.include_router(tasks.router, prefix="/tasks", tags=["tasks"], dependencies=l
 app.include_router(agents.router, prefix="/agents", tags=["agents"], dependencies=legacy_dependencies)
 app.include_router(memory.router, prefix="/memory", tags=["memory"], dependencies=legacy_dependencies)
 app.include_router(router.router, prefix="/router", tags=["router"], dependencies=legacy_dependencies)
+app.include_router(
+    router.router,
+    prefix="/v1/router",
+    tags=["router"],
+    dependencies=authenticated_dependencies,
+)
 app.include_router(context.router, prefix="/context", tags=["context"], dependencies=legacy_dependencies)
 app.include_router(
     repository.router,

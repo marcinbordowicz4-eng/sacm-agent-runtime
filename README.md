@@ -74,6 +74,17 @@ GET  /v1/runs/{run_id}/recovery
 POST /v1/runs/{run_id}/recover
 ```
 
+### Outcome-adaptive routing
+
+`POST /v1/router/rank` combines the existing PyTorch router prior with durable
+agent outcomes, cost, latency, retries, verification evidence, project history,
+task tags, risk, and previous failure classifications. Outcome data cannot
+override the neural fallback until `SACM_ROUTER_MIN_SAMPLES` real samples
+(default `3`) exist for a candidate. Decisions return ranked candidates,
+confidence weights, penalties, reasons, and the data scope used. A `success`
+outcome is explicitly an execution proxy and is not represented as human
+acceptance.
+
 ### Governed task intake
 
 Issue trackers submit a connector-neutral `TaskContractV1` to
