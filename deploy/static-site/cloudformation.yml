@@ -12,6 +12,27 @@ Parameters:
     Description: Static public IP of the SACM API host.
 
 Resources:
+  SiteKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Customer-managed encryption key for the SACM static site.
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnableAccountAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: "*"
+
+  SiteKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/sacm-static-site
+      TargetKeyId: !Ref SiteKey
+
   SiteBucket:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
@@ -21,7 +42,9 @@ Resources:
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
+              KMSMasterKeyID: !GetAtt SiteKey.Arn
+              SSEAlgorithm: aws:kms
+            BucketKeyEnabled: true
       OwnershipControls:
         Rules:
           - ObjectOwnership: BucketOwnerEnforced
@@ -51,6 +74,43 @@ Resources:
         OriginAccessControlOriginType: s3
         SigningBehavior: always
         SigningProtocol: sigv4
+
+  SiteWebAcl:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: sacm-public-site
+      Scope: CLOUDFRONT
+      DefaultAction:
+        Allow: {}
+      VisibilityConfig:
+        CloudWatchMetricsEnabled: true
+        MetricName: sacm-public-site
+        SampledRequestsEnabled: true
+      Rules:
+        - Name: AWSManagedRulesCommonRuleSet
+          Priority: 0
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: sacm-public-site-common
+            SampledRequestsEnabled: true
+        - Name: AWSManagedRulesKnownBadInputsRuleSet
+          Priority: 1
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: sacm-public-site-known-bad-inputs
+            SampledRequestsEnabled: true
 
   SiteDistribution:
     Type: AWS::CloudFront::Distribution
@@ -91,6 +151,7 @@ Resources:
             OriginAccessControlId: !GetAtt SiteOriginAccessControl.Id
             S3OriginConfig: {}
         PriceClass: PriceClass_100
+        WebACLId: !GetAtt SiteWebAcl.Arn
         ViewerCertificate:
           AcmCertificateArn: !Ref SiteCertificate
           MinimumProtocolVersion: TLSv1.2_2021
@@ -146,9 +207,13 @@ Resources:
 Outputs:
   BucketName:
     Value: !Ref SiteBucket
+  EncryptionKeyArn:
+    Value: !GetAtt SiteKey.Arn
   DistributionId:
     Value: !Ref SiteDistribution
   DistributionDomain:
     Value: !GetAtt SiteDistribution.DomainName
   ApiDomain:
     Value: !Sub https://api.${DomainName}
+  WebAclArn:
+    Value: !GetAtt SiteWebAcl.Arn
