@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlsplit
@@ -41,33 +42,35 @@ class IsolatedCommandRunner:
             "{repository}": str(repository or ""),
         }
         command = [replacements.get(item, item) for item in self.settings.runner_command]
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=workspace,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=int(task["timeout_seconds"]),
-                check=False,
-                text=False,
-                env={
-                    "PATH": os.environ.get("PATH", ""),
-                    "HOME": str(workspace),
-                    "SACM_EXECUTOR_NETWORK_BOUNDARY": (
-                        self.settings.network_boundary.deployment_type
-                    ),
-                },
-            )
-        except subprocess.TimeoutExpired:
+        returncode, output, timed_out = self._run_bounded(
+            command,
+            workspace,
+            int(task["timeout_seconds"]),
+        )
+        if timed_out:
             return AgentResultV1(
                 run_id=task["run_id"],
                 step_id=task["step_id"],
                 status="FAILED",
                 summary="The isolated customer runner timed out.",
-                failure={"type": "IsolatedRunnerTimeout"},
+                failure={
+                    "type": "IsolatedRunnerTimeout",
+                    "message": "The isolated customer runner timed out.",
+                    "diagnostic_bundle": {
+                        "command": command[0],
+                        "tool": Path(command[0]).name,
+                        "raw_output": output,
+                        "environment_errors": [
+                            {
+                                "kind": "environment",
+                                "source": "customer-executor",
+                                "message": "Runner command timed out.",
+                            }
+                        ],
+                    },
+                },
             )
-        if completed.returncode != 0 or not output_path.is_file():
+        if returncode != 0 or not output_path.is_file():
             return AgentResultV1(
                 run_id=task["run_id"],
                 step_id=task["step_id"],
@@ -75,13 +78,74 @@ class IsolatedCommandRunner:
                 summary="The isolated customer runner failed.",
                 failure={
                     "type": "IsolatedRunnerFailed",
-                    "returncode": completed.returncode,
+                    "message": "The isolated customer runner failed.",
+                    "returncode": returncode,
+                    "diagnostic_bundle": {
+                        "command": command[0],
+                        "exit_code": returncode,
+                        "tool": Path(command[0]).name,
+                        "raw_output": output,
+                    },
                 },
             )
         if output_path.stat().st_size > 10 * 1024 * 1024:
             raise ValueError("Isolated runner result exceeds the 10 MiB limit.")
         result = AgentResultV1.model_validate_json(output_path.read_bytes())
         return self._sanitize_artifacts(result, workspace)
+
+    def _run_bounded(
+        self,
+        command: list[str],
+        workspace: Path,
+        timeout_seconds: int,
+    ) -> tuple[int, str, bool]:
+        process = subprocess.Popen(
+            command,
+            cwd=workspace,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=False,
+            env={
+                "PATH": os.environ.get("PATH", ""),
+                "HOME": str(workspace),
+                "SACM_EXECUTOR_NETWORK_BOUNDARY": (
+                    self.settings.network_boundary.deployment_type
+                ),
+            },
+        )
+        if process.stdout is None:
+            raise RuntimeError("Runner output pipe was not created.")
+        stdout = process.stdout
+        tail = bytearray()
+        lock = threading.Lock()
+
+        def drain() -> None:
+            try:
+                while chunk := stdout.read(8192):
+                    with lock:
+                        tail.extend(chunk)
+                        if len(tail) > 65536:
+                            del tail[:-65536]
+            except (OSError, ValueError):
+                return
+
+        reader = threading.Thread(target=drain, daemon=True)
+        reader.start()
+        timed_out = False
+        try:
+            returncode = process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            process.kill()
+            returncode = process.wait()
+        reader.join(timeout=1)
+        if reader.is_alive():
+            stdout.close()
+            reader.join(timeout=1)
+        with lock:
+            output = bytes(tail).decode("utf-8", errors="replace")
+        return returncode, output, timed_out
 
     def _sanitize_artifacts(
         self, result: AgentResultV1, workspace: Path

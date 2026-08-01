@@ -1,9 +1,9 @@
 import os
-import re
 from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
+from sacm.core.diagnostic_service import DiagnosticService
 from sacm.core.run_service import RunService
 from sacm.infrastructure.db.models import Run, RunStep
 from sacm.schemas.recovery import (
@@ -37,52 +37,13 @@ _TARGET_BY_ACTION = {
     RecoveryAction.ESCALATE: "FAILED",
 }
 
-_PATTERNS = (
-    (
-        FailureClassification.COMPILATION,
-        r"\b(compile|compiler|syntaxerror|type error|typeerror|build failed)\b",
-    ),
-    (
-        FailureClassification.TEST_REGRESSION,
-        r"\b(test(s)? failed|assertionerror|regression|pytest|jest|junit)\b",
-    ),
-    (
-        FailureClassification.MISSING_CONTEXT,
-        r"\b(missing context|not enough context|unknown symbol|cannot find definition)\b",
-    ),
-    (
-        FailureClassification.ARCHITECTURE_MISMATCH,
-        r"\b(architecture|architectural|wrong layer|boundary violation)\b",
-    ),
-    (
-        FailureClassification.BAD_PLAN,
-        r"\b(bad plan|replan|plan is wrong|invalid plan)\b",
-    ),
-    (
-        FailureClassification.API_INCOMPATIBILITY,
-        r"\b(api incompat|breaking change|contract mismatch|signature mismatch)\b",
-    ),
-    (
-        FailureClassification.WRONG_ASSUMPTION,
-        r"\b(wrong assumption|incorrect assumption|requirement misunderstood)\b",
-    ),
-    (
-        FailureClassification.ENVIRONMENT,
-        r"\b(environment|permission denied|disk full|out of memory|connection refused)\b",
-    ),
-    (
-        FailureClassification.MODEL_STUCK,
-        r"\b(model stuck|repeated patch|no progress|loop detected|context window)\b",
-    ),
-)
-
-
 class RecoveryService:
     """Classifies execution failures and schedules bounded, evidence-backed recovery."""
 
     def __init__(self, db: Session) -> None:
         self.db = db
         self.runs = RunService(db)
+        self.diagnostics = DiagnosticService()
 
     def handle(
         self,
@@ -116,47 +77,7 @@ class RecoveryService:
             if isinstance(failure, FailureInputV1)
             else dict(failure)
         )
-        message = str(
-            raw.get("message") or raw.get("detail") or "Agent execution failed."
-        )
-        failure_type = str(raw.get("type") or "AgentFailure")
-        explicit = raw.get("classification")
-        if explicit:
-            classification = FailureClassification(str(explicit))
-            confidence = float(raw.get("confidence") or 1.0)
-        else:
-            searchable = f"{failure_type} {message}".lower()
-            classification = FailureClassification.TOOL_FAILURE
-            confidence = 0.55
-            for candidate, pattern in _PATTERNS:
-                if re.search(pattern, searchable, re.IGNORECASE):
-                    classification = candidate
-                    confidence = 0.85
-                    break
-        retryable = raw.get("retryable")
-        if retryable is None:
-            retryable = True
-        known = {
-            "schema_version",
-            "classification",
-            "type",
-            "message",
-            "evidence",
-            "details",
-            "retryable",
-            "confidence",
-        }
-        details = dict(raw.get("details") or {})
-        details.update({key: value for key, value in raw.items() if key not in known})
-        return FailureReportV1(
-            classification=classification,
-            type=failure_type,
-            message=message,
-            evidence=list(raw.get("evidence") or []),
-            details=details,
-            retryable=bool(retryable),
-            confidence=confidence,
-        )
+        return self.diagnostics.diagnose(raw)
 
     def decide(
         self,
@@ -166,26 +87,46 @@ class RecoveryService:
         requested_action: RecoveryAction | None = None,
     ) -> RecoveryDecisionV1:
         max_attempts = int(os.getenv("SACM_MAX_RECOVERY_ATTEMPTS", "3"))
+        minimum_confidence = float(
+            os.getenv("SACM_DIAGNOSTIC_MIN_CONFIDENCE", "0.6")
+        )
         if max_attempts < 0:
             raise ValueError("SACM_MAX_RECOVERY_ATTEMPTS cannot be negative.")
+        if not 0 <= minimum_confidence <= 1:
+            raise ValueError(
+                "SACM_DIAGNOSTIC_MIN_CONFIDENCE must be between 0 and 1."
+            )
         attempt = run.recovery_attempt_count + 1
         action = requested_action or _ACTION_BY_FAILURE[failure.classification]
-        if attempt > max_attempts or not failure.retryable:
+        repeated_identical_patch = self._repeated_identical_patch(run, failure)
+        autonomous_confidence_block = (
+            requested_action is None and failure.confidence < minimum_confidence
+        )
+        if (
+            attempt > max_attempts
+            or not failure.retryable
+            or autonomous_confidence_block
+            or repeated_identical_patch
+        ):
             action = RecoveryAction.ESCALATE
         target = _TARGET_BY_ACTION[action]
         status: Literal["SCHEDULED", "ESCALATED"] = (
             "ESCALATED" if action == RecoveryAction.ESCALATE else "SCHEDULED"
         )
         instructions = self._instructions(action, failure)
-        reason = (
-            f"Recovery attempt budget exhausted ({max_attempts})."
-            if attempt > max_attempts
-            else (
-                "Failure requires human clarification or plan correction."
-                if not failure.retryable
-                else f"{failure.classification.value} maps to {action.value}."
+        if attempt > max_attempts:
+            reason = f"Recovery attempt budget exhausted ({max_attempts})."
+        elif not failure.retryable:
+            reason = "Failure is explicitly non-retryable."
+        elif autonomous_confidence_block:
+            reason = (
+                f"Diagnostic confidence {failure.confidence:.3f} is below "
+                f"the autonomous threshold {minimum_confidence:.3f}."
             )
-        )
+        elif repeated_identical_patch:
+            reason = "The same patch and root cause already failed; retry is blocked."
+        else:
+            reason = f"{failure.classification.value} maps to {action.value}."
         return RecoveryDecisionV1(
             action=action,
             status=status,
@@ -194,6 +135,20 @@ class RecoveryService:
             max_attempts=max_attempts,
             target_run_status=target,
             instructions=instructions,
+        )
+
+    @staticmethod
+    def _repeated_identical_patch(run: Run, failure: FailureReportV1) -> bool:
+        patch_hash = failure.details.get("patch_hash")
+        fingerprint = failure.diagnosis_fingerprint
+        if not patch_hash or not fingerprint:
+            return False
+        history = (run.recovery_state or {}).get("history", [])
+        return any(
+            item.get("failure", {}).get("diagnosis_fingerprint") == fingerprint
+            and item.get("failure", {}).get("details", {}).get("patch_hash")
+            == patch_hash
+            for item in history
         )
 
     @staticmethod

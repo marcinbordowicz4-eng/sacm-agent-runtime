@@ -2,6 +2,7 @@ import base64
 import logging
 import os
 import stat
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from sacm.customer_executor.client import ControlPlaneError, ExecutorRevoked
 from sacm.customer_executor.config import ExecutorSettings
 from sacm.customer_executor.daemon import CustomerExecutorDaemon
 from sacm.customer_executor.identity import IdentityStore
+from sacm.customer_executor.runner import IsolatedCommandRunner
 from sacm.schemas.contracts import AgentResultV1
 
 
@@ -115,6 +117,49 @@ class FakeRunner:
             status="COMPLETED",
             summary="completed inside customer boundary",
         )
+
+
+def test_isolated_runner_returns_bounded_structured_diagnostics(tmp_path):
+    signing_key = Ed25519PrivateKey.generate()
+    settings = _settings(tmp_path, signing_key).model_copy(
+        update={
+            "runner_command": [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; "
+                    "sys.stdout.write('x' * 70000); "
+                    "sys.stderr.write("
+                    "'\\nFAILED tests/test_api.py::test_create - assert 1 == 2'); "
+                    "sys.exit(1)"
+                ),
+            ]
+        }
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    result = IsolatedCommandRunner(settings).run(
+        {
+            "run_id": "run-1",
+            "step_id": "step-1",
+            "timeout_seconds": 60,
+        },
+        workspace,
+        None,
+    )
+
+    assert result.status == "FAILED"
+    failure = (
+        result.failure.model_dump(mode="json")
+        if hasattr(result.failure, "model_dump")
+        else result.failure
+    )
+    bundle = failure["diagnostic_bundle"]
+    assert bundle["exit_code"] == 1
+    assert bundle["tool"] == Path(sys.executable).name
+    assert len(bundle["raw_output"]) <= 65536
+    assert "FAILED tests/test_api.py::test_create" in bundle["raw_output"]
 
 
 def _lease(

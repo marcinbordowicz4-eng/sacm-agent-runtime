@@ -20,6 +20,10 @@
   replanning, context expansion, model switching, retry, and explicit
   escalation. Recovery decisions persist in run state, events, snapshots,
   evidence, external agent contracts, and authenticated APIs.
+- Structured Diagnostic Engine V2 with normalized build/test/tool bundles,
+  deterministic ecosystem parsers, graph-linked evidence, calibrated
+  confidence, low-confidence escalation, stable diagnosis fingerprints, and
+  duplicate patch/root-cause retry prevention.
 - Explainable outcome-adaptive agent routing that combines the PyTorch prior
   with real execution outcomes, project/task similarity, cost, latency,
   retries, verification, risk, and failure patterns while retaining a

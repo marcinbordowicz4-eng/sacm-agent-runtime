@@ -67,6 +67,16 @@ reuse the original task budget, are capped by `SACM_MAX_RECOVERY_ATTEMPTS`
 evidence manifest, and operational context. External agents receive the
 diagnosis and recovery instructions in the retried `AgentTaskV1`.
 
+Structured `diagnostic-bundle/v2` inputs preserve command, exit code, tool,
+compiler diagnostics, failed tests, stack traces, changed symbols, affected
+requirements, environment errors, prior attempts, graph context, and patch
+identity. Deterministic adapters normalize Maven/Gradle/javac, pytest/mypy/Ruff,
+TypeScript/Jest/Vitest, Playwright/Cypress, Go, Terraform, Helm, kubeconform,
+JUnit XML, and JSON-line output before classification. Diagnoses include
+concrete evidence, calibrated confidence, reason codes, root cause, and a stable
+fingerprint. Confidence below `SACM_DIAGNOSTIC_MIN_CONFIDENCE` (default `0.6`)
+escalates to a human, and an identical patch/root-cause pair is never retried.
+
 Authenticated recovery APIs are:
 
 ```text

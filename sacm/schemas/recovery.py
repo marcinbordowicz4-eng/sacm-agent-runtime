@@ -27,6 +27,44 @@ class RecoveryAction(StrEnum):
     ESCALATE = "ESCALATE"
 
 
+class DiagnosticEvidenceV2(BaseModel):
+    kind: Literal[
+        "compiler",
+        "test",
+        "stack_trace",
+        "environment",
+        "contract",
+        "tool",
+        "requirement",
+        "history",
+    ]
+    source: str
+    message: str
+    code: str | None = None
+    file: str | None = None
+    line: int | None = Field(default=None, ge=1)
+    test_name: str | None = None
+    requirement_id: str | None = None
+
+
+class DiagnosticBundleV2(BaseModel):
+    schema_version: Literal["diagnostic-bundle/v2"] = "diagnostic-bundle/v2"
+    command: str | None = None
+    exit_code: int | None = None
+    tool: str | None = None
+    raw_output: str | None = None
+    compiler_diagnostics: list[DiagnosticEvidenceV2] = Field(default_factory=list)
+    failed_tests: list[DiagnosticEvidenceV2] = Field(default_factory=list)
+    stack_traces: list[DiagnosticEvidenceV2] = Field(default_factory=list)
+    changed_symbols: list[str] = Field(default_factory=list)
+    affected_requirements: list[str] = Field(default_factory=list)
+    environment_errors: list[DiagnosticEvidenceV2] = Field(default_factory=list)
+    previous_attempts: list[dict[str, Any]] = Field(default_factory=list)
+    graph_context: dict[str, Any] = Field(default_factory=dict)
+    root_cause_analysis: dict[str, Any] | None = None
+    patch_hash: str | None = None
+
+
 class FailureInputV1(BaseModel):
     schema_version: Literal["failure-input/v1"] = "failure-input/v1"
     classification: FailureClassification | None = None
@@ -36,6 +74,7 @@ class FailureInputV1(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
     retryable: bool | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
+    diagnostic_bundle: DiagnosticBundleV2 | None = None
 
 
 class FailureReportV1(BaseModel):
@@ -47,6 +86,11 @@ class FailureReportV1(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
     retryable: bool
     confidence: float = Field(ge=0, le=1)
+    root_cause: str | None = None
+    reason_codes: list[str] = Field(default_factory=list)
+    diagnosis_fingerprint: str | None = None
+    diagnostic_bundle: DiagnosticBundleV2 | None = None
+    stages: list[str] = Field(default_factory=list)
 
 
 class RecoveryDecisionV1(BaseModel):
