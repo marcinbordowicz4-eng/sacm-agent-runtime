@@ -1,5 +1,6 @@
 import { type FormEvent, useEffect, useState } from 'react'
 import './App.css'
+import { LandingPage } from './components/LandingPage'
 import { MissionControl } from './components/MissionControl'
 import type {
   AggregateAnalytics,
@@ -22,7 +23,7 @@ import type {
   SupplyChainRecord,
 } from './types'
 
-function App() {
+function DashboardApp() {
   const [baseUrl, setBaseUrl] = useState(import.meta.env.VITE_SACM_API_URL || '/api')
   const [actor, setActor] = useState(localStorage.getItem('sacm-actor') || 'local-admin')
   const [token, setToken] = useState('')
@@ -220,6 +221,23 @@ function App() {
     verifyEvidence={verifyEvidence}
     submitSettings={submitSettings}
   />
+}
+
+function App() {
+  const [showConsole, setShowConsole] = useState(window.location.hash === '#console')
+
+  useEffect(() => {
+    const handleHashChange = () => setShowConsole(window.location.hash === '#console')
+    window.addEventListener('hashchange', handleHashChange)
+    return () => window.removeEventListener('hashchange', handleHashChange)
+  }, [])
+
+  if (!showConsole) return <LandingPage />
+
+  return <>
+    <a className="console-home-link" href="#" aria-label="Back to SACM home">SACM home</a>
+    <DashboardApp />
+  </>
 }
 
 export default App

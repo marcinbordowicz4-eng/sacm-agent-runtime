@@ -3,7 +3,7 @@ http:
     sacm:
       entryPoints:
         - websecure
-      rule: Host(`sacm.io`)
+      rule: Host(`sacm.io`) || Host(`api.sacm.io`)
       middlewares:
         - sacm-rate
         - sacm-security
