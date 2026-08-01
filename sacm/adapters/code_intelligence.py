@@ -6,6 +6,12 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
+from sacm.core.code_intelligence_service import (
+    DEFAULT_SCIP_METADATA_PATH,
+    RepositoryCodeState,
+)
+from sacm.schemas.application_context import CodeIntelligenceSnapshotV1
+
 MAX_SCIP_JSON_BYTES = 8 * 1024 * 1024
 MAX_SCIP_JSON_CONTAINERS = 100_000
 MAX_SCIP_JSON_SEPARATORS = 500_000
@@ -20,28 +26,51 @@ DEFAULT_SCIP_JSON_PATH = ".sacm/index.scip.json"
 
 @dataclass
 class CodeIntelligenceImport:
-    status: str = "unavailable"
+    status: str = "UNAVAILABLE"
     source: str = "none"
     fingerprint: str | None = None
+    expected_fingerprint: str | None = None
     tool_name: str | None = None
     tool_version: str | None = None
     document_count: int = 0
     symbol_count: int = 0
     occurrence_count: int = 0
+    repository_revision: str | None = None
+    index_revision: str | None = None
+    workspace_hash: str | None = None
+    index_workspace_hash: str | None = None
+    workspace_complete: bool = True
+    index_workspace_complete: bool | None = None
+    generated_at: str | None = None
+    dirty: bool = False
+    indexers: list[dict[str, str]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
     def metadata(self) -> dict[str, Any]:
-        return {
+        return CodeIntelligenceSnapshotV1.model_validate(
+            {
+            "schema_version": "code-intelligence-snapshot/v1",
             "document_count": self.document_count,
             "errors": self.errors,
             "fingerprint": self.fingerprint,
+            "expected_fingerprint": self.expected_fingerprint,
             "occurrence_count": self.occurrence_count,
+            "repository_revision": self.repository_revision,
+            "index_revision": self.index_revision,
+            "workspace_hash": self.workspace_hash,
+            "index_workspace_hash": self.index_workspace_hash,
+            "workspace_complete": self.workspace_complete,
+            "index_workspace_complete": self.index_workspace_complete,
+            "generated_at": self.generated_at,
+            "dirty": self.dirty,
+            "indexers": self.indexers,
             "source": self.source,
             "status": self.status,
             "symbol_count": self.symbol_count,
             "tool_name": self.tool_name,
             "tool_version": self.tool_version,
-        }
+            }
+        ).model_dump(mode="json")
 
 
 class CodeIntelligenceAdapter(Protocol):
@@ -51,6 +80,7 @@ class CodeIntelligenceAdapter(Protocol):
         repository_id: str,
         graph: "GraphSink",
         file_ids: dict[str, str],
+        state: RepositoryCodeState,
     ) -> CodeIntelligenceImport: ...
 
 
@@ -65,7 +95,11 @@ class GraphSink(Protocol):
 class ScipJsonAdapter:
     """Imports semantic facts emitted by the canonical `scip print --json` CLI."""
 
-    def __init__(self, relative_path: str | None = None):
+    def __init__(
+        self,
+        relative_path: str | None = None,
+        metadata_relative_path: str | None = None,
+    ):
         configured = (
             relative_path
             or os.getenv("SACM_SCIP_JSON_PATH")
@@ -75,6 +109,15 @@ class ScipJsonAdapter:
         if path.is_absolute() or ".." in path.parts:
             raise ValueError("SACM_SCIP_JSON_PATH must be repository-relative.")
         self.relative_path = path.as_posix()
+        metadata_configured = (
+            metadata_relative_path
+            or os.getenv("SACM_SCIP_METADATA_PATH")
+            or DEFAULT_SCIP_METADATA_PATH
+        )
+        metadata_path = PurePosixPath(metadata_configured)
+        if metadata_path.is_absolute() or ".." in metadata_path.parts:
+            raise ValueError("SACM_SCIP_METADATA_PATH must be repository-relative.")
+        self.metadata_relative_path = metadata_path.as_posix()
 
     def merge(
         self,
@@ -82,30 +125,93 @@ class ScipJsonAdapter:
         repository_id: str,
         graph: GraphSink,
         file_ids: dict[str, str],
+        state: RepositoryCodeState,
     ) -> CodeIntelligenceImport:
-        result = CodeIntelligenceImport(source="scip-json/v1")
+        result = CodeIntelligenceImport(
+            source="scip-json/v1",
+            repository_revision=state.revision,
+            workspace_hash=state.workspace_hash,
+            dirty=state.dirty,
+            workspace_complete=state.fingerprint_complete,
+        )
         index_path = (repository_root / self.relative_path).resolve()
         if repository_root not in index_path.parents or not index_path.is_file():
+            return result
+        if not state.fingerprint_complete:
+            result.status = "TRUNCATED"
+            result.errors.append("workspace_fingerprint_truncated")
+            return result
+        manifest_path = (repository_root / self.metadata_relative_path).resolve()
+        if repository_root not in manifest_path.parents or not manifest_path.is_file():
+            result.status = "STALE"
+            result.errors.append("scip_snapshot_metadata_missing")
+            return result
+        try:
+            if manifest_path.stat().st_size > 64 * 1024:
+                raise ValueError("SCIP snapshot metadata is oversized.")
+            manifest = json.loads(manifest_path.read_bytes())
+        except (OSError, UnicodeDecodeError, ValueError, RecursionError):
+            result.status = "INVALID"
+            result.errors.append("scip_snapshot_metadata_invalid")
+            return result
+        if not isinstance(manifest, dict):
+            result.status = "INVALID"
+            result.errors.append("scip_snapshot_metadata_invalid")
+            return result
+        if manifest.get("schema_version") != "code-intelligence-snapshot/v1":
+            result.status = "INVALID"
+            result.errors.append("scip_snapshot_metadata_invalid")
+            return result
+        result.index_revision = str(manifest.get("repository_revision") or "") or None
+        result.index_workspace_hash = str(manifest.get("workspace_hash") or "") or None
+        result.index_workspace_complete = manifest.get("workspace_complete")
+        result.generated_at = str(manifest.get("generated_at") or "") or None
+        result.expected_fingerprint = (
+            str(manifest.get("index_sha256") or "") or None
+        )
+        raw_indexers = manifest.get("indexers") or []
+        if isinstance(raw_indexers, list):
+            result.indexers = [
+                {
+                    str(key): str(value)
+                    for key, value in item.items()
+                    if key in {"language", "name", "version"}
+                }
+                for item in raw_indexers
+                if isinstance(item, dict)
+            ][:20]
+        if (
+            result.index_revision != state.revision
+            or result.index_workspace_hash != state.workspace_hash
+            or result.index_workspace_complete is not True
+        ):
+            result.status = "STALE"
+            result.errors.append("scip_snapshot_revision_mismatch")
             return result
         try:
             size = index_path.stat().st_size
             if size > MAX_SCIP_JSON_BYTES:
+                result.status = "TRUNCATED"
                 result.errors.append("scip_index_oversized")
                 return result
             raw = index_path.read_bytes()
             if not self._preflight_json(raw):
+                result.status = "TRUNCATED"
                 result.errors.append("scip_index_structure_limit_exceeded")
                 return result
             payload = json.loads(raw)
         except (OSError, UnicodeDecodeError, ValueError, RecursionError):
+            result.status = "INVALID"
             result.errors.append("scip_index_invalid")
             return result
         if not isinstance(payload, dict):
+            result.status = "INVALID"
             result.errors.append("scip_index_invalid")
             return result
 
         metadata = payload.get("metadata")
         if not isinstance(metadata, dict):
+            result.status = "INVALID"
             result.errors.append("scip_index_invalid")
             return result
         tool = self._value(metadata, "tool_info", "toolInfo") or {}
@@ -114,13 +220,23 @@ class ScipJsonAdapter:
         result.tool_name = str(tool.get("name") or "") or None
         result.tool_version = str(tool.get("version") or "") or None
         result.fingerprint = hashlib.sha256(raw).hexdigest()
+        if (
+            result.expected_fingerprint is None
+            or result.fingerprint != result.expected_fingerprint
+        ):
+            result.status = "INVALID"
+            result.errors.append("scip_snapshot_digest_mismatch")
+            return result
         documents = payload.get("documents") or []
         if not isinstance(documents, list):
+            result.status = "INVALID"
             result.errors.append("scip_documents_invalid")
             return result
 
         symbols: dict[str, str] = {}
-        symbol_information: dict[str, tuple[dict[str, Any], str | None]] = {}
+        symbol_information: dict[
+            str, tuple[dict[str, Any], str | None, str | None]
+        ] = {}
         external_symbols = payload.get(
             "external_symbols", payload.get("externalSymbols", [])
         )
@@ -129,7 +245,7 @@ class ScipJsonAdapter:
         for item in external_symbols[:MAX_SCIP_SYMBOLS]:
             if isinstance(item, dict) and self._valid_symbol(item.get("symbol")):
                 symbol = str(item["symbol"])
-                symbol_information[symbol] = (item, None)
+                symbol_information[symbol] = (item, None, None)
         if len(external_symbols) > MAX_SCIP_SYMBOLS:
             result.errors.append("scip_symbol_limit_exceeded")
         if len(documents) > MAX_SCIP_DOCUMENTS:
@@ -145,6 +261,11 @@ class ScipJsonAdapter:
             relative_path = self._value(document, "relative_path", "relativePath")
             if not isinstance(relative_path, str) or not self._canonical(relative_path):
                 continue
+            indexer = (
+                str(document.get("sacm_indexer"))
+                if document.get("sacm_indexer")
+                else None
+            )
             document_symbols = document.get("symbols") or []
             if not isinstance(document_symbols, list):
                 continue
@@ -155,8 +276,8 @@ class ScipJsonAdapter:
                     break
                 if isinstance(item, dict) and self._valid_symbol(item.get("symbol")):
                     symbol = str(item["symbol"])
-                    key = self._symbol_key(relative_path, symbol)
-                    symbol_information[key] = (item, relative_path)
+                    key = self._symbol_key(relative_path, symbol, indexer)
+                    symbol_information[key] = (item, relative_path, indexer)
 
         for document in documents:
             if occurrence_limit_reached:
@@ -170,6 +291,11 @@ class ScipJsonAdapter:
             file_id = file_ids.get(relative_path)
             if file_id is None:
                 continue
+            indexer = (
+                str(document.get("sacm_indexer"))
+                if document.get("sacm_indexer")
+                else None
+            )
             result.document_count += 1
             occurrences = document.get("occurrences") or []
             if not isinstance(occurrences, list):
@@ -186,7 +312,9 @@ class ScipJsonAdapter:
                     result.errors.append("scip_occurrence_limit_exceeded")
                     occurrence_limit_reached = True
                     break
-                symbol_key = self._symbol_key(relative_path, occurrence_symbol)
+                symbol_key = self._symbol_key(
+                    relative_path, occurrence_symbol, indexer
+                )
                 symbol_id = symbols.get(symbol_key)
                 if symbol_id is None:
                     if len(symbols) >= MAX_SCIP_SYMBOLS:
@@ -195,7 +323,9 @@ class ScipJsonAdapter:
                         )
                         symbol_limit_reached = True
                         break
-                    information = symbol_information.get(symbol_key, ({}, None))[0]
+                    information = symbol_information.get(
+                        symbol_key, ({}, None, None)
+                    )[0]
                     symbol_id = self._symbol_node(
                         repository_id,
                         symbol_key,
@@ -212,7 +342,12 @@ class ScipJsonAdapter:
                 node = graph.nodes.get(symbol_id)
                 if node is not None and roles & 1:
                     definitions = node["metadata"].setdefault("definitions", [])
-                    definition = {"path": relative_path, "line": line}
+                    definition = {
+                        "repository": repository_id,
+                        "path": relative_path,
+                        "line": line,
+                        "indexer": indexer,
+                    }
                     if definition not in definitions and len(definitions) < 20:
                         definitions.append(definition)
                 graph.add_edge(
@@ -229,7 +364,10 @@ class ScipJsonAdapter:
                 result.occurrence_count += 1
 
         relationship_count = 0
-        for symbol_key, (information, document_path) in symbol_information.items():
+        for (
+            symbol_key,
+            (information, document_path, indexer),
+        ) in symbol_information.items():
             source_id = symbols.get(symbol_key)
             if source_id is None:
                 continue
@@ -246,7 +384,9 @@ class ScipJsonAdapter:
                 if not self._valid_symbol(target_symbol):
                     continue
                 assert isinstance(target_symbol, str)
-                target_key = self._symbol_key(document_path or "", target_symbol)
+                target_key = self._symbol_key(
+                    document_path or "", target_symbol, indexer
+                )
                 target_id = symbols.get(target_key)
                 if target_id is None:
                     if len(symbols) >= MAX_SCIP_SYMBOLS:
@@ -255,7 +395,7 @@ class ScipJsonAdapter:
                         )
                         break
                     target_information = symbol_information.get(
-                        target_key, ({}, None)
+                        target_key, ({}, None, None)
                     )[0]
                     target_id = self._symbol_node(
                         repository_id,
@@ -272,7 +412,19 @@ class ScipJsonAdapter:
 
         self._link_syntactic_fallback(graph, symbols)
         result.symbol_count = len(symbols)
-        result.status = "available" if result.document_count else "unavailable"
+        truncated_errors = {
+            "scip_document_limit_exceeded",
+            "scip_occurrence_limit_exceeded",
+            "scip_relationship_limit_exceeded",
+            "scip_symbol_limit_exceeded",
+        }
+        result.status = (
+            "TRUNCATED"
+            if truncated_errors & set(result.errors)
+            else "PARTIAL"
+            if result.errors or not result.document_count
+            else "COMPLETE"
+        )
         return result
 
     @staticmethod
@@ -285,7 +437,12 @@ class ScipJsonAdapter:
         graph: GraphSink,
     ) -> str:
         digest = hashlib.sha256(symbol_key.encode()).hexdigest()[:24]
-        symbol_id = f"{repository_id}:semantic_symbol:{digest}"
+        local = symbol.startswith("local ")
+        symbol_id = (
+            f"{repository_id}:semantic_local_symbol:{digest}"
+            if local
+            else f"semantic_symbol:{digest}"
+        )
         display_name = str(
             information.get("display_name")
             or information.get("displayName")
@@ -295,7 +452,7 @@ class ScipJsonAdapter:
             {
                 "id": symbol_id,
                 "type": "semantic_symbol",
-                "repository": repository_id,
+                "repository": repository_id if local else "canonical",
                 "label": display_name,
                 "path": None,
                 "metadata": {
@@ -307,6 +464,16 @@ class ScipJsonAdapter:
                 },
             }
         )
+        node = graph.nodes.get(symbol_id)
+        if node is not None:
+            sources = node["metadata"].setdefault("sources", [])
+            source = {
+                "repository": repository_id,
+                "tool_name": result.tool_name,
+                "tool_version": result.tool_version,
+            }
+            if source not in sources and len(sources) < 20:
+                sources.append(source)
         return symbol_id
 
     @staticmethod
@@ -326,7 +493,8 @@ class ScipJsonAdapter:
                 for semantic_id, semantic in semantic_nodes.items()
                 if semantic.get("label") == node.get("label")
                 and any(
-                    definition.get("path") == node.get("path")
+                    definition.get("repository") == node.get("repository")
+                    and definition.get("path") == node.get("path")
                     for definition in semantic.get("metadata", {}).get(
                         "definitions", []
                     )
@@ -401,8 +569,14 @@ class ScipJsonAdapter:
         return isinstance(value, str) and 0 < len(value) <= MAX_SCIP_SYMBOL_LENGTH
 
     @staticmethod
-    def _symbol_key(relative_path: str, symbol: str) -> str:
-        return f"{relative_path}\0{symbol}" if symbol.startswith("local ") else symbol
+    def _symbol_key(
+        relative_path: str, symbol: str, indexer: str | None = None
+    ) -> str:
+        return (
+            f"{indexer or 'unknown'}\0{relative_path}\0{symbol}"
+            if symbol.startswith("local ")
+            else symbol
+        )
 
     @staticmethod
     def _simple_name(symbol: str) -> str:

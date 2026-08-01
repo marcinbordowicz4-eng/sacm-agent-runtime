@@ -98,7 +98,7 @@ def test_builds_durable_deterministic_multi_repository_context(
     second = service.build(task.id)
 
     assert first.status == "complete"
-    assert first.scanner_version == "deterministic-scanner/v2.1"
+    assert first.scanner_version == "deterministic-scanner/v2.2"
     assert [item.status for item in first.repositories] == ["available", "available"]
     assert {node.type for node in first.graph.nodes} >= {
         "api_route",

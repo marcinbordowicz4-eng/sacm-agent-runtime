@@ -229,6 +229,28 @@ existing deterministic syntax graph remains an explicit fallback. This adapter
 contract also permits future LSP or Sourcegraph-backed implementations without
 changing context-package consumers.
 
+Context Engine V2.2 binds every semantic snapshot to the repository revision,
+workspace hash, generation time, indexer identities, and SHA-256 of the exact
+index bytes. `CodeIntelligenceSnapshotV1` reports `COMPLETE`, `PARTIAL`,
+`TRUNCATED`, `STALE`, `INVALID`, or `UNAVAILABLE`. Only revision- and
+digest-matching snapshots contribute semantic nodes. Incomplete semantic
+context adds a deterministic risk factor so autonomy policy can reduce or block
+execution instead of silently trusting stale navigation.
+
+Global SCIP symbols use one canonical graph node across all repositories;
+document-local symbols remain isolated by repository, path, and indexer.
+Definitions retain their repository occurrences, enabling one backend/SDK/client
+symbol to traverse to every indexed repository.
+
+Optional automatic indexing is enabled with `SACM_SCIP_AUTO_INDEX=true` and an
+administrator-controlled `SACM_SCIP_INDEXERS_JSON` registry. Each language
+entry declares file extensions plus fixed argv arrays for an official indexer
+and `scip print --json`; placeholders are limited to `{repository}`, `{index}`,
+`{project_name}`, and `{revision}`. Commands run without a shell, with process
+group termination, timeout, and streaming stdout/stderr limits. Current
+snapshots are reused; regeneration occurs only when revision, workspace,
+indexer identity, or index digest changes.
+
 Authenticated package APIs are:
 
 ```text

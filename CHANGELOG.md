@@ -35,6 +35,10 @@
   identities, document-local symbol isolation, typed definitions/references,
   tests and relationships, index fingerprints, bounded untrusted-input
   handling, and deterministic syntax fallback.
+- Context Engine V2.2 revision-bound automatic SCIP indexing with explicit
+  completeness states, Git/workspace and index-digest binding, stale-context
+  risk escalation, bounded shell-free indexer execution, snapshot reuse, and
+  canonical semantic symbols shared across repositories.
 - Explainable outcome-adaptive agent routing that combines the PyTorch prior
   with real execution outcomes, project/task similarity, cost, latency,
   retries, verification, risk, and failure patterns while retaining a

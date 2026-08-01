@@ -6,6 +6,38 @@ from pydantic import BaseModel, Field
 ContextSignal = Annotated[str, Field(max_length=500)]
 
 
+class CodeIntelligenceSnapshotV1(BaseModel):
+    schema_version: Literal["code-intelligence-snapshot/v1"] = (
+        "code-intelligence-snapshot/v1"
+    )
+    status: Literal[
+        "COMPLETE",
+        "PARTIAL",
+        "TRUNCATED",
+        "STALE",
+        "INVALID",
+        "UNAVAILABLE",
+    ]
+    source: str
+    fingerprint: str | None = None
+    expected_fingerprint: str | None = None
+    tool_name: str | None = None
+    tool_version: str | None = None
+    indexers: list[dict[str, str]] = Field(default_factory=list)
+    document_count: int = Field(ge=0)
+    symbol_count: int = Field(ge=0)
+    occurrence_count: int = Field(ge=0)
+    repository_revision: str | None = None
+    index_revision: str | None = None
+    workspace_hash: str | None = None
+    index_workspace_hash: str | None = None
+    workspace_complete: bool
+    index_workspace_complete: bool | None = None
+    generated_at: str | None = None
+    dirty: bool
+    errors: list[str] = Field(default_factory=list)
+
+
 class GraphNode(BaseModel):
     id: str
     type: str
@@ -79,6 +111,7 @@ class ApplicationContextRead(BaseModel):
         "deterministic-scanner/v1",
         "deterministic-scanner/v2",
         "deterministic-scanner/v2.1",
+        "deterministic-scanner/v2.2",
     ]
     graph: ApplicationGraph
     graph_hash: str

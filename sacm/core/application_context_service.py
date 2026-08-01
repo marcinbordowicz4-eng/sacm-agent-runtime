@@ -5,6 +5,7 @@ import os
 import posixpath
 import re
 import stat
+import subprocess
 import tomllib
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -15,6 +16,10 @@ from sqlalchemy.orm import Session
 
 from sacm.adapters.code_intelligence import ScipJsonAdapter
 from sacm.adapters.repository_adapter import RepositoryAdapter, RepositoryError
+from sacm.core.code_intelligence_service import (
+    ScipIndexingService,
+    inspect_repository_state,
+)
 from sacm.infrastructure.db.models import (
     ApplicationContext,
     ApplicationContextRepository,
@@ -35,7 +40,7 @@ MAX_GRAPH_NODES = 20_000
 MAX_GRAPH_EDGES = 40_000
 MAX_FILE_BYTES = 1_000_000
 MAX_IMPACT_NODES = 100
-SCANNER_VERSION = "deterministic-scanner/v2.1"
+SCANNER_VERSION = "deterministic-scanner/v2.2"
 
 EXCLUDED_DIRECTORIES = {
     ".git",
@@ -668,12 +673,39 @@ class ApplicationContextService:
             linked_symbol_id = file_symbol_ids.get((path, symbol_name))
             if linked_symbol_id:
                 graph.add_edge(contract_id, linked_symbol_id, "represented_by")
-        result.code_intelligence = ScipJsonAdapter().merge(
+        state = inspect_repository_state(adapter.repo_path)
+        scip_adapter = ScipJsonAdapter()
+        auto_index_error: str | None = None
+        try:
+            ScipIndexingService().ensure_index(
+                adapter.repo_path,
+                state,
+                paths,
+                index_relative_path=scip_adapter.relative_path,
+            )
+        except (
+            OSError,
+            RuntimeError,
+            ValueError,
+            subprocess.TimeoutExpired,
+        ) as exc:
+            auto_index_error = f"scip_auto_index_failed:{type(exc).__name__}"
+        finally:
+            state = inspect_repository_state(adapter.repo_path)
+        code_intelligence = scip_adapter.merge(
             adapter.repo_path,
             repository_id,
             graph,
             file_ids,
-        ).metadata()
+            state,
+        )
+        if auto_index_error:
+            code_intelligence.errors.append(auto_index_error)
+            if code_intelligence.status == "UNAVAILABLE":
+                code_intelligence.status = "INVALID"
+            elif code_intelligence.status == "COMPLETE":
+                code_intelligence.status = "PARTIAL"
+        result.code_intelligence = code_intelligence.metadata()
         result.module_count = len(module_ids)
         result.truncated = result.truncated or graph.truncated
         return result
@@ -1303,11 +1335,21 @@ class ApplicationContextService:
             impacts.values(), key=lambda item: (-item["score"], item["node_id"])
         )
         selected = ordered[:MAX_IMPACT_NODES]
-        impacted_repositories = {
-            node_lookup[item["node_id"]]["repository"]
-            for item in selected
-            if item["node_id"] in node_lookup
-        }
+        impacted_repositories: set[str] = set()
+        for item in selected:
+            node = node_lookup.get(item["node_id"])
+            if node is None:
+                continue
+            if node["repository"] == "canonical":
+                impacted_repositories.update(
+                    definition["repository"]
+                    for definition in node.get("metadata", {}).get(
+                        "definitions", []
+                    )
+                    if definition.get("repository")
+                )
+            else:
+                impacted_repositories.add(node["repository"])
         return {
             "query_terms": sorted(weighted_terms),
             "impacted_nodes": selected,
@@ -1408,6 +1450,22 @@ class ApplicationContextService:
             "truncated_graph",
             10 if graph.get("truncated") else 0,
             "The graph reached a deterministic scan bound.",
+        )
+        intelligence_statuses = {
+            str((row.scan_metadata or {}).get("code_intelligence", {}).get("status"))
+            for row in repositories
+        }
+        incomplete_intelligence = intelligence_statuses & {
+            "INVALID",
+            "PARTIAL",
+            "STALE",
+            "TRUNCATED",
+        }
+        add(
+            "code_intelligence_incomplete",
+            15 if incomplete_intelligence else 0,
+            "Code intelligence status requires reduced autonomy: "
+            + ", ".join(sorted(incomplete_intelligence)),
         )
         score = min(100, sum(item["contribution"] for item in factors))
         level = (
