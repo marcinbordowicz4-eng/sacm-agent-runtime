@@ -1,7 +1,9 @@
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
+
+ContextSignal = Annotated[str, Field(max_length=500)]
 
 
 class GraphNode(BaseModel):
@@ -73,7 +75,9 @@ class ApplicationContextRead(BaseModel):
     task_id: str
     schema_version: Literal["application-context/v1"]
     status: Literal["complete", "partial", "unavailable"]
-    scanner_version: Literal["deterministic-scanner/v1"]
+    scanner_version: Literal[
+        "deterministic-scanner/v1", "deterministic-scanner/v2"
+    ]
     graph: ApplicationGraph
     graph_hash: str
     impact_analysis: ImpactAnalysis
@@ -89,3 +93,65 @@ class ImpactRiskRead(BaseModel):
     graph_hash: str
     impact_analysis: ImpactAnalysis
     risk_analysis: RiskAnalysis
+
+
+class ContextExpansionRequest(BaseModel):
+    run_id: str | None = Field(default=None, max_length=100)
+    step_id: str | None = Field(default=None, max_length=100)
+    role: Literal["reasoner", "coder", "reviewer", "tester", "security"] = "coder"
+    reason: str = Field(default="task_execution", max_length=100)
+    refresh_graph: bool = True
+    changed_symbols: list[ContextSignal] = Field(
+        default_factory=list, max_length=50
+    )
+    failing_symbols: list[ContextSignal] = Field(
+        default_factory=list, max_length=50
+    )
+    changed_files: list[ContextSignal] = Field(default_factory=list, max_length=50)
+    failed_tests: list[ContextSignal] = Field(default_factory=list, max_length=50)
+    affected_requirements: list[ContextSignal] = Field(
+        default_factory=list, max_length=50
+    )
+    max_depth: int = Field(default=2, ge=1, le=4)
+    max_nodes: int = Field(default=48, ge=1, le=200)
+
+
+class ContextNodeReference(BaseModel):
+    node_id: str
+    type: str
+    label: str
+    repository: str
+    path: str | None = None
+    distance: int = Field(ge=0)
+    reasons: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContextFileExcerpt(BaseModel):
+    repository: str
+    path: str
+    content_hash: str
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=1)
+    content: str = ""
+    content_included: bool = True
+    node_ids: list[str] = Field(default_factory=list)
+
+
+class ContextPackageV2(BaseModel):
+    schema_version: Literal["context-package/v2"] = "context-package/v2"
+    task_id: str
+    run_id: str | None = None
+    step_id: str | None = None
+    role: str
+    reason: str
+    graph_hash: str
+    seed_node_ids: list[str] = Field(default_factory=list)
+    nodes: list[ContextNodeReference] = Field(default_factory=list)
+    edges: list[GraphEdge] = Field(default_factory=list)
+    files: list[ContextFileExcerpt] = Field(default_factory=list)
+    requirements: list[str] = Field(default_factory=list)
+    max_depth: int = Field(ge=1)
+    max_nodes: int = Field(ge=1)
+    truncated: bool = False
+    package_hash: str

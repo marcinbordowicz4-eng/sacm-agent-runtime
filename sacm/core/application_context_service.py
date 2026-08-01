@@ -34,7 +34,7 @@ MAX_GRAPH_NODES = 20_000
 MAX_GRAPH_EDGES = 40_000
 MAX_FILE_BYTES = 1_000_000
 MAX_IMPACT_NODES = 100
-SCANNER_VERSION = "deterministic-scanner/v1"
+SCANNER_VERSION = "deterministic-scanner/v2"
 
 EXCLUDED_DIRECTORIES = {
     ".git",
@@ -319,6 +319,7 @@ class ApplicationContextService:
             context = ApplicationContext(
                 task_id=task.id,
                 status=status,
+                scanner_version=SCANNER_VERSION,
                 graph=graph_data,
                 graph_hash=graph_hash,
                 impact_analysis=impact,
@@ -464,6 +465,11 @@ class ApplicationContextService:
         module_ids: set[str] = set()
         file_ids: dict[str, str] = {}
         pending_imports: list[tuple[str, str, str]] = []
+        pending_calls: list[tuple[str, str]] = []
+        symbol_ids: dict[str, list[str]] = defaultdict(list)
+        file_symbol_ids: dict[tuple[str, str], str] = {}
+        route_symbols: list[tuple[str, str, str]] = []
+        schema_symbols: list[tuple[str, str, str]] = []
         paths: list[str] = []
         for root, directories, filenames in os.walk(
             adapter.repo_path,
@@ -582,6 +588,10 @@ class ApplicationContextService:
                     }
                 ):
                     graph.add_edge(file_id, route_id, "declares_api_route")
+                    if route["handler"]:
+                        route_symbols.append(
+                            (route_id, relative_path, route["handler"])
+                        )
             result.api_route_count += len(routes)
 
             schemas = self._extract_schemas(relative_path, content)
@@ -601,7 +611,39 @@ class ApplicationContextService:
                     }
                 ):
                     graph.add_edge(file_id, schema_id, "declares_database_schema")
+                    schema_symbols.append(
+                        (schema_id, relative_path, schema["name"])
+                    )
             result.schema_count += len(schemas)
+            for index, symbol in enumerate(
+                self._extract_symbols(relative_path, content)
+            ):
+                symbol_id = (
+                    f"{repository_id}:symbol:{relative_path}:"
+                    f"{symbol['line']:06d}:{index:03d}"
+                )
+                if not graph.add_node(
+                    {
+                        "id": symbol_id,
+                        "type": "test_symbol" if symbol["is_test"] else "symbol",
+                        "repository": repository_id,
+                        "label": symbol["name"],
+                        "path": relative_path,
+                        "metadata": {
+                            key: value
+                            for key, value in symbol.items()
+                            if key != "calls"
+                        },
+                    }
+                ):
+                    result.truncated = True
+                    continue
+                graph.add_edge(file_id, symbol_id, "declares_symbol")
+                symbol_ids[symbol["name"]].append(symbol_id)
+                file_symbol_ids[(relative_path, symbol["name"])] = symbol_id
+                pending_calls.extend(
+                    (symbol_id, called) for called in symbol["calls"]
+                )
             pending_imports.extend(
                 (file_id, kind, imported)
                 for kind, imported in self._extract_internal_imports(
@@ -610,9 +652,208 @@ class ApplicationContextService:
             )
 
         self._link_imports(repository_id, pending_imports, file_ids, graph)
+        self._link_symbols(
+            pending_calls,
+            symbol_ids,
+            graph,
+        )
+        for contract_id, path, symbol_name in route_symbols:
+            linked_symbol_id = file_symbol_ids.get((path, symbol_name))
+            if linked_symbol_id:
+                graph.add_edge(contract_id, linked_symbol_id, "implemented_by")
+        for contract_id, path, symbol_name in schema_symbols:
+            linked_symbol_id = file_symbol_ids.get((path, symbol_name))
+            if linked_symbol_id:
+                graph.add_edge(contract_id, linked_symbol_id, "represented_by")
         result.module_count = len(module_ids)
         result.truncated = result.truncated or graph.truncated
         return result
+
+    @staticmethod
+    def _extract_symbols(path: str, content: str) -> list[dict[str, Any]]:
+        suffix = Path(path).suffix.lower()
+        symbols: list[dict[str, Any]] = []
+        test_path = bool(
+            re.search(r"(^|/)(tests?|__tests__)(/|$)", path)
+            or re.search(r"(?:^|[_.-])(test|spec)(?:[_.-]|$)", Path(path).name)
+        )
+        if suffix == ".py":
+            try:
+                tree = ast.parse(content)
+            except SyntaxError:
+                return []
+            parents: list[str] = []
+
+            def visit(body: list[ast.stmt]) -> None:
+                for node in body:
+                    if isinstance(
+                        node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                    ):
+                        qualified = ".".join([*parents, node.name])
+                        calls = ApplicationContextService._owned_python_calls(node)
+                        symbols.append(
+                            {
+                                "name": node.name,
+                                "qualified_name": qualified,
+                                "kind": (
+                                    "class"
+                                    if isinstance(node, ast.ClassDef)
+                                    else "function"
+                                ),
+                                "line": node.lineno,
+                                "end_line": getattr(node, "end_lineno", node.lineno),
+                                "is_test": test_path
+                                or node.name.startswith(("test_", "Test")),
+                                "calls": calls,
+                            }
+                        )
+                        parents.append(node.name)
+                        visit(node.body)
+                        parents.pop()
+            visit(tree.body)
+            return symbols
+
+        patterns: tuple[tuple[str, str], ...]
+        if suffix in {".js", ".jsx", ".ts", ".tsx"}:
+            patterns = (
+                (
+                    "function",
+                    r"(?m)^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)",
+                ),
+                (
+                    "function",
+                    r"(?m)^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)"
+                    r"\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>",
+                ),
+                (
+                    "class",
+                    r"(?m)^\s*(?:export\s+)?class\s+([A-Za-z_$][\w$]*)",
+                ),
+            )
+        elif suffix in {".java", ".kt", ".kts", ".cs"}:
+            patterns = (
+                (
+                    "class",
+                    r"(?m)^\s*(?:public\s+|private\s+|protected\s+|internal\s+)?"
+                    r"(?:class|interface|record|object)\s+(\w+)",
+                ),
+                (
+                    "function",
+                    r"(?m)^\s*(?:public\s+|private\s+|protected\s+|static\s+|"
+                    r"final\s+|suspend\s+|override\s+)*[\w<>\[\],?.]+\s+(\w+)\s*\([^;]*\)\s*\{",
+                ),
+            )
+        elif suffix == ".go":
+            patterns = (
+                ("function", r"(?m)^\s*func\s+(?:\([^)]*\)\s*)?(\w+)\s*\("),
+                ("class", r"(?m)^\s*type\s+(\w+)\s+struct\s*\{"),
+            )
+        else:
+            return []
+        declarations: list[tuple[int, int, str, str]] = []
+        seen: set[tuple[int, str]] = set()
+        for kind, pattern in patterns:
+            for match in re.finditer(pattern, content):
+                name = match.group(1)
+                line = content.count("\n", 0, match.start()) + 1
+                if (line, name) in seen:
+                    continue
+                seen.add((line, name))
+                declarations.append((match.start(), match.end(), name, kind))
+        declarations.sort()
+        for index, (start_offset, body_offset, name, kind) in enumerate(declarations):
+            end_offset = (
+                declarations[index + 1][0]
+                if index + 1 < len(declarations)
+                else len(content)
+            )
+            body = content[body_offset:end_offset]
+            calls = sorted(
+                set(
+                    re.findall(
+                        r"\b([A-Za-z_$][\w$]*)\s*\(",
+                        body,
+                    )
+                )
+                - {
+                    "if",
+                    "for",
+                    "while",
+                    "switch",
+                    "catch",
+                    "return",
+                    "new",
+                }
+            )
+            line = content.count("\n", 0, start_offset) + 1
+            end_line = content.count("\n", 0, end_offset) + 1
+            symbols.append(
+                {
+                    "name": name,
+                    "qualified_name": name,
+                    "kind": kind,
+                    "line": line,
+                    "end_line": max(line, end_line),
+                    "is_test": test_path
+                    or name.lower().startswith(("test", "should")),
+                    "calls": calls[:100],
+                }
+            )
+        return sorted(symbols, key=lambda item: (item["line"], item["name"]))
+
+    @staticmethod
+    def _call_name(node: ast.expr) -> str | None:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            return node.attr
+        return None
+
+    @staticmethod
+    def _owned_python_calls(
+        node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+    ) -> list[str]:
+        calls: set[str] = set()
+
+        class CallVisitor(ast.NodeVisitor):
+            def visit_Call(self, child: ast.Call) -> None:
+                name = ApplicationContextService._call_name(child.func)
+                if name:
+                    calls.add(name)
+                self.generic_visit(child)
+
+            def visit_FunctionDef(self, child: ast.FunctionDef) -> None:
+                if child is node:
+                    self.generic_visit(child)
+
+            def visit_AsyncFunctionDef(self, child: ast.AsyncFunctionDef) -> None:
+                if child is node:
+                    self.generic_visit(child)
+
+            def visit_ClassDef(self, child: ast.ClassDef) -> None:
+                if child is node:
+                    self.generic_visit(child)
+
+        CallVisitor().visit(node)
+        return sorted(calls)
+
+    @staticmethod
+    def _link_symbols(
+        calls: list[tuple[str, str]],
+        symbol_ids: dict[str, list[str]],
+        graph: GraphBuilder,
+    ) -> None:
+        for source, name in sorted(calls):
+            targets = symbol_ids.get(name, [])
+            if len(targets) != 1 or targets[0] == source:
+                continue
+            target = targets[0]
+            source_node = graph.nodes.get(source, {})
+            graph.add_edge(
+                source,
+                target,
+                "tests" if source_node.get("type") == "test_symbol" else "calls",
+            )
 
     @staticmethod
     def _link_module(

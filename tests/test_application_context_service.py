@@ -12,6 +12,7 @@ from sacm.infrastructure.db.models import (
     ApplicationContext,
     ApplicationContextRepository,
     Base,
+    Run,
 )
 from sacm.infrastructure.db.session import get_db
 from sacm.schemas.task import RepositoryReference, TaskContractV1
@@ -97,6 +98,7 @@ def test_builds_durable_deterministic_multi_repository_context(
     second = service.build(task.id)
 
     assert first.status == "complete"
+    assert first.scanner_version == "deterministic-scanner/v2"
     assert [item.status for item in first.repositories] == ["available", "available"]
     assert {node.type for node in first.graph.nodes} >= {
         "api_route",
@@ -147,7 +149,6 @@ def test_unavailable_and_unsafe_repositories_are_explicit(
             requested_by="platform",
         )
     )
-
     context = ApplicationContextService(db).build(task.id)
 
     assert context.status == "unavailable"
@@ -229,6 +230,8 @@ def test_application_context_api_is_authenticated_and_returns_impact(
             requested_by="platform",
         )
     )
+    db.add(Run(id="run-api", task_id=task.id))
+    db.commit()
 
     def override_db():
         yield db
@@ -249,6 +252,24 @@ def test_application_context_api_is_authenticated_and_returns_impact(
             )
             assert impact.status_code == 200
             assert impact.json()["graph_hash"] == built.json()["graph_hash"]
+            package_path = f"/v1/tasks/{task.id}/context-package"
+            package = client.post(
+                package_path,
+                headers={"X-SACM-Actor": "developer"},
+                json={
+                    "run_id": "run-api",
+                    "role": "coder",
+                    "failing_symbols": ["create_order"],
+                },
+            )
+            assert package.status_code == 201
+            assert package.json()["schema_version"] == "context-package/v2"
+            latest = client.get(
+                f"{package_path}?run_id=run-api",
+                headers={"X-SACM-Actor": "developer"},
+            )
+            assert latest.status_code == 200
+            assert latest.json()["package_hash"] == package.json()["package_hash"]
     finally:
         app.dependency_overrides.clear()
         db.close()

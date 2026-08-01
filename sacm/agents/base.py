@@ -86,6 +86,7 @@ class Agent(ABC):
             test_command=context.get("test_command"),
             build_command=context.get("build_command"),
             token_budget=task.token_budget,
+            context_package=context.get("context_package"),
             skill_state=dict(context.get("skill_state", {})),
         )
 

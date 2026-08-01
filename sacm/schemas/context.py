@@ -16,6 +16,7 @@ class AgentContext(BaseModel):
     test_command: str | None = None
     build_command: str | None = None
     token_budget: int = 12000
+    context_package: dict[str, Any] | None = None
     # Accumulated proof-of-state ledger: skill_name → SkillContribution dict.
     # Grows as each agent in the pipeline contributes its proofs.
     skill_state: dict[str, Any] = Field(default_factory=dict)

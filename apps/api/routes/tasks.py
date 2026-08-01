@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from apps.api.task_access import authorize_task
+from sacm.core.auth_service import require_authenticated_actor
 from sacm.core.bdd_traceability import BddTraceabilityService
 from sacm.core.cost_service import CostService
 from sacm.core.event_service import EventService
@@ -60,10 +62,12 @@ def run_task(task_id: str, db: Session = Depends(get_db)) -> dict:
 
 
 @router.get("/{task_id}/events", response_model=list[ContextEventRead])
-def list_events(task_id: str, db: Session = Depends(get_db)) -> list[ContextEventRead]:
-    task = TaskService(db).get(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+def list_events(
+    task_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> list[ContextEventRead]:
+    authorize_task(db, task_id, actor)
     events = EventService(db).get_recent_events(task_id, limit=100)
     return [ContextEventRead.model_validate(event) for event in events]
 

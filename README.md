@@ -190,14 +190,34 @@ out-of-root repositories are persisted as explicit `unavailable` entries, so
 a partial multi-repository context cannot appear complete.
 
 The deterministic scanner records repository, module, file, dependency,
-HTTP-route, and database/schema nodes plus containment, import, and declaration
-edges. It excludes hidden/generated/vendor directories, reads no file larger
-than 1 MB, scans at most 5,000 files per repository, and caps the complete graph
-at 20,000 nodes and 40,000 edges. Impact ranking uses normalized terms from the
+HTTP-route, database/schema, symbol, and test-symbol nodes. Its directed edges
+cover containment, imports, declarations, calls, tests, route implementation,
+and schema representation. Python symbols use AST ownership; JavaScript,
+TypeScript, Java, Kotlin, C#, and Go use bounded declaration extraction. The
+scanner excludes hidden/generated/vendor directories, reads no file larger than
+1 MB, scans at most 5,000 files per repository, and caps the complete graph at
+20,000 nodes and 40,000 edges. Impact ranking uses normalized terms from the
 task title, description, labels, and acceptance criteria, with one-hop graph
 propagation. The risk score is a deterministic 0-100 sum of returned factors
 such as unavailable repositories, API/schema/dependency reach, impact breadth,
 cross-repository scope, sensitive task terms, and scan truncation.
+
+Context Engine V2 refreshes that graph during agent execution and creates a
+bounded, SHA-256-addressed `context-package/v2`. Seeds can come from changed or
+failing symbols, changed files, failed tests, affected requirements, or the
+task impact set. Role-aware traversal follows callers, callees, related tests,
+imports, routes, and schemas, then safely reads only repository-owned excerpts.
+Every package is persisted as a tenant-attributed event, can be tied only to a
+run owned by the same task, and is compacted together with excerpts under the
+agent token budget. `EXPAND_CONTEXT` recovery increases traversal depth and
+node limits without discarding prior failure evidence.
+
+Authenticated package APIs are:
+
+```text
+POST /v1/tasks/{task_id}/context-package
+GET  /v1/tasks/{task_id}/context-package?run_id={run_id}
+```
 
 ### Governed execution planning
 

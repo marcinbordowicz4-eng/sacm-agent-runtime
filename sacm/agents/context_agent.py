@@ -184,6 +184,7 @@ class ContextAgent(Agent):
             test_command=base.test_command,
             build_command=base.build_command,
             token_budget=base.token_budget,
+            context_package=base.context_package,
             skill_state=skill_state,
         )
 

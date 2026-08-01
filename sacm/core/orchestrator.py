@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from sacm.core.agent_registry import AgentRegistry
 from sacm.core.context_compiler import ContextCompiler
+from sacm.core.context_engine_service import ContextEngineService
 from sacm.core.embedding_service import EmbeddingService
 from sacm.core.event_service import EventService
 from sacm.core.evidence_service import EvidenceService
@@ -15,6 +16,7 @@ from sacm.core.router import RouterService
 from sacm.core.state_service import StateService
 from sacm.core.task_service import TaskService
 from sacm.core.verifier import Verifier
+from sacm.schemas.application_context import ContextExpansionRequest
 
 MAX_STEPS = int(os.getenv("SACM_MAX_AGENT_STEPS", "10"))
 
@@ -28,6 +30,7 @@ class Orchestrator:
         self.state_service = StateService(db)
         self.agent_registry = AgentRegistry()
         self.context_compiler = ContextCompiler()
+        self.context_engine = ContextEngineService(db)
         self.router_service = RouterService()
         self.verifier = Verifier(db)
         self.embedding_service = EmbeddingService()
@@ -155,11 +158,48 @@ class Orchestrator:
                 },
             )
 
+            diagnostic_bundle = recovery_failure.get("diagnostic_bundle") or {}
+            failure_details = recovery_failure.get("details") or {}
+            context_request = ContextExpansionRequest(
+                run_id=run_id,
+                step_id=f"agent-{step_index + 1}",
+                role=selected_agent.contract_role,
+                reason=(
+                    "recovery_context_expansion"
+                    if recovery_action == "EXPAND_CONTEXT"
+                    else "task_execution"
+                ),
+                changed_symbols=list(
+                    diagnostic_bundle.get("changed_symbols")
+                    or failure_details.get("changed_symbols")
+                    or []
+                ),
+                failing_symbols=[
+                    item.get("message", "")
+                    for item in diagnostic_bundle.get("compiler_diagnostics", [])
+                    if item.get("message")
+                ],
+                changed_files=list(failure_details.get("changed_files") or []),
+                failed_tests=[
+                    item.get("test_name", "")
+                    for item in diagnostic_bundle.get("failed_tests", [])
+                    if item.get("test_name")
+                ],
+                affected_requirements=list(
+                    diagnostic_bundle.get("affected_requirements")
+                    or failure_details.get("affected_requirements")
+                    or []
+                ),
+                max_depth=3 if recovery_action == "EXPAND_CONTEXT" else 2,
+                max_nodes=96 if recovery_action == "EXPAND_CONTEXT" else 48,
+            )
+            context_package = self.context_engine.build(task_id, context_request)
             compiled_context = self.context_compiler.compile(
                 task=task,
                 agent=selected_agent,
                 history=history,
                 memory=memory,
+                context_package=context_package,
             )
             if recovery_context:
                 decision = recovery_context["decision"]
