@@ -28,6 +28,14 @@ def test_orchestrator_only_initializes_pending_tasks_to_planning():
     assert Orchestrator._should_initialize_planning("testing") is False
 
 
+def test_orchestrator_uses_deterministic_agents_for_terminal_phases():
+    from sacm.core.orchestrator import Orchestrator
+
+    assert Orchestrator._phase_agent_name("testing") == "CloudExecutor"
+    assert Orchestrator._phase_agent_name("reviewing") == "Reviewer"
+    assert Orchestrator._phase_agent_name("coding") is None
+
+
 def test_agent_registry_has_agents():
     from sacm.core.agent_registry import AgentRegistry
 

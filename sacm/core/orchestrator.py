@@ -112,6 +112,11 @@ class Orchestrator:
             ) or self.agent_registry.get_by_index(
                 routing_result["selected_agent_index"]
             )
+            phase_agent = self._phase_agent_name(task.status)
+            if phase_agent and not recovery_action:
+                selected_agent = (
+                    self.agent_registry.get(phase_agent) or selected_agent
+                )
             if recovery_action == "REPLAN":
                 selected_agent = next(
                     (
@@ -338,6 +343,13 @@ class Orchestrator:
             }
         )
         return response
+
+    @staticmethod
+    def _phase_agent_name(current_status: str) -> str | None:
+        return {
+            "testing": "CloudExecutor",
+            "reviewing": "Reviewer",
+        }.get(current_status)
 
     @staticmethod
     def _should_initialize_planning(current_status: str) -> bool:
