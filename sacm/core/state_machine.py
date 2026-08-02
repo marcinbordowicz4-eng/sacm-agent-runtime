@@ -91,7 +91,7 @@ _DEFAULTS: list[tuple] = [
     # testing → reviewing / debugging
     ("testing",   "reviewing", "tests_written",       "TestGenerator",         0.72),
     ("testing",   "reviewing", "mobile_e2e_executed", "MobileE2E",             0.70),
-    ("testing",   "debugging", "tests_run",           "CloudExecutor",         0.60),
+    ("testing",   "reviewing", "tests_run",           "CloudExecutor",         0.80),
     # debugging → coding / testing
     ("debugging", "coding",    "root_cause_found",    "ClaudeReasoner",        0.70),
     ("debugging", "testing",   "fix_applied",         "CodexCoder",            0.65),
