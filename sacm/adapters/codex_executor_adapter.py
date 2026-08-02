@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -28,8 +29,17 @@ class CodexExecutorAdapter:
             worktree_path,
             timeout=1_800,
         )
+        dependency_bin = self.repository.repo_path / "node_modules" / ".bin"
         verification = [
-            {"command": command, **self._run(shlex.split(command), worktree_path, 600)}
+            {
+                "command": command,
+                **self._run(
+                    shlex.split(command),
+                    worktree_path,
+                    600,
+                    path_prefix=dependency_bin,
+                ),
+            }
             for command in verification_commands
             if command
         ]
@@ -51,8 +61,20 @@ class CodexExecutorAdapter:
         return f"sacm/{normalized[:48]}"
 
     @staticmethod
-    def _run(command: list[str], cwd: str, timeout: int) -> dict[str, Any]:
+    def _run(
+        command: list[str],
+        cwd: str,
+        timeout: int,
+        *,
+        path_prefix: Path | None = None,
+    ) -> dict[str, Any]:
         started_at = time.monotonic()
+        env = None
+        if path_prefix is not None:
+            env = os.environ.copy()
+            env["PATH"] = os.pathsep.join(
+                [str(path_prefix), env.get("PATH", "")]
+            ).rstrip(os.pathsep)
         try:
             completed = subprocess.run(
                 command,
@@ -61,6 +83,7 @@ class CodexExecutorAdapter:
                 text=True,
                 timeout=timeout,
                 check=False,
+                env=env,
             )
         except FileNotFoundError:
             return {

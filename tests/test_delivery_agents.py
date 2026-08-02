@@ -52,6 +52,28 @@ def test_codex_executor_parses_json_lines_only():
     ]
 
 
+def test_codex_executor_prepends_repository_dependencies_to_path(
+    monkeypatch, tmp_path
+):
+    recorded = {}
+
+    def fake_run(command, **kwargs):
+        recorded.update(kwargs)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    dependency_bin = tmp_path / "node_modules" / ".bin"
+    CodexExecutorAdapter._run(
+        ["npm", "run", "test:all"],
+        str(tmp_path),
+        600,
+        path_prefix=dependency_bin,
+    )
+
+    assert recorded["env"]["PATH"].split(":")[0] == str(dependency_bin)
+
+
 def test_codex_executor_extracts_only_provider_reported_usage():
     usage = CodexExecutorAdapter._usage_from_events(
         [
