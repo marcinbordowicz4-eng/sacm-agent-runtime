@@ -53,7 +53,8 @@ class Orchestrator:
         if not task:
             raise ValueError(f"Task {task_id} not found")
 
-        self.task_service.update_status(task_id, "planning")
+        if self._should_initialize_planning(task.status):
+            self.task_service.update_status(task_id, "planning")
         steps_taken = 0
         trace = self.observability.start_task(task_id, max_steps)
 
@@ -337,3 +338,7 @@ class Orchestrator:
             }
         )
         return response
+
+    @staticmethod
+    def _should_initialize_planning(current_status: str) -> bool:
+        return current_status == "pending"

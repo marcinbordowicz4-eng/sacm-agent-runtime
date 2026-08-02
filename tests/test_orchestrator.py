@@ -20,6 +20,14 @@ def test_orchestrator_imports():
     assert Orchestrator is not None
 
 
+def test_orchestrator_only_initializes_pending_tasks_to_planning():
+    from sacm.core.orchestrator import Orchestrator
+
+    assert Orchestrator._should_initialize_planning("pending") is True
+    assert Orchestrator._should_initialize_planning("reviewing") is False
+    assert Orchestrator._should_initialize_planning("testing") is False
+
+
 def test_agent_registry_has_agents():
     from sacm.core.agent_registry import AgentRegistry
 
