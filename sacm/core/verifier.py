@@ -49,8 +49,12 @@ class Verifier:
         )
         strict = bool(requirements)
         if not strict:
-            legacy_complete = (
+            verification_passed = (
                 self.has_successful_verification(result)
+                or self._actions_have_successful_verification(actions)
+            )
+            legacy_complete = (
+                verification_passed
                 and result.next_state_hint not in {"blocked", "debugging"}
                 and (
                     result.next_state_hint == "done"
@@ -179,6 +183,24 @@ class Verifier:
             evidence_complete=False,
             complete=False,
             blocking_reasons=blocking,
+        )
+
+    @staticmethod
+    def _actions_have_successful_verification(
+        actions: list[dict[str, Any]],
+    ) -> bool:
+        verification_action_types = {
+            "BUILD_RESULT",
+            "TEST_RESULT",
+            "VERIFICATION",
+        }
+        return any(
+            action.get("type") in verification_action_types
+            and (
+                action.get("passed") is True
+                or action.get("success") is True
+            )
+            for action in actions
         )
 
     def is_done(self, task: Task, result: AgentResult) -> bool:

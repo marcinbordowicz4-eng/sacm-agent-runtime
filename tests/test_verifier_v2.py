@@ -166,6 +166,33 @@ def _result(actions, *, confidence=0.0, next_state_hint="blocked"):
     )
 
 
+def test_legacy_review_reuses_prior_successful_verification(db):
+    run = RunService(db).create(
+        RunCreate(title="Review verified change", description="Review the diff.")
+    )
+    EventService(db).save(
+        run.task_id,
+        "agent_result",
+        {
+            "agent_task_contract": {"run_id": run.id},
+            "actions": [{"type": "VERIFICATION", "passed": True}],
+        },
+    )
+    review = AgentResult(
+        agent_name="Reviewer",
+        summary="Review complete.",
+        actions=[{"type": "REVIEW", "description": "Inspected the diff."}],
+        artifacts=[],
+        confidence=0.8,
+        next_state_hint="done",
+    )
+
+    matrix = Verifier(db).evaluate(run.task, review, run_id=run.id)
+
+    assert Verifier.has_successful_verification(review) is False
+    assert matrix.complete is True
+
+
 def test_verifier_v2_requires_every_acceptance_criterion(db):
     task = _task(db)
     actions = _actions()
