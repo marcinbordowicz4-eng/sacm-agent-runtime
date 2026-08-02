@@ -1,7 +1,4 @@
-import os
-
 from sacm.adapters.codex_executor_adapter import CodexExecutorAdapter
-from sacm.adapters.github_adapter import GitHubAdapter
 from sacm.agents.base import Agent
 from sacm.core.observability import ObservabilityService
 from sacm.schemas.context import AgentContext
@@ -44,7 +41,6 @@ class CodexExecutorAgent(Agent):
         )
         usage = self._usage_artifacts(result["usage"])
         tool_execution = self._tool_artifacts(result)
-        pull_request = self._open_pull_request(context, result, success)
         summary = (
             f"Codex completed isolated execution on branch {result['branch_name']}."
             if success
@@ -59,6 +55,7 @@ class CodexExecutorAgent(Agent):
                     "branch_name": result["branch_name"],
                     "worktree_path": result["worktree_path"],
                     "returncode": result["codex"]["returncode"],
+                    "dependency_cache": result["dependency_cache"],
                 }
             ]
             + [
@@ -68,8 +65,7 @@ class CodexExecutorAgent(Agent):
                 }
                 for command in result["verification"]
                 if command.get("retry_evidence")
-            ]
-            + ([pull_request] if pull_request else []),
+            ],
             artifacts=[
                 {"type": "diff", "content": result["diff"][:20_000]},
                 {
@@ -83,7 +79,9 @@ class CodexExecutorAgent(Agent):
             ],
             confidence=1.0 if success else 0.2,
             next_state_hint=(
-                "testing" if success else ("blocked" if resource_failure else "debugging")
+                "testing"
+                if success
+                else ("blocked" if resource_failure else "debugging")
             ),
             memory_update=summary,
             skills_contributed=[
@@ -147,34 +145,3 @@ class CodexExecutorAgent(Agent):
                 command["tool"], command["duration_ms"], command["returncode"]
             )
         return [{"type": "tool_execution", **command} for command in commands]
-
-    @staticmethod
-    def _open_pull_request(
-        context: AgentContext, result: dict, success: bool
-    ) -> dict | None:
-        if os.getenv("SACM_CODEX_AUTO_CREATE_PR", "false").lower() != "true":
-            return None
-        if not success or not result["verification"]:
-            return {
-                "type": "PULL_REQUEST",
-                "created": False,
-                "reason": "Codex and at least one verification command must succeed.",
-            }
-
-        title = f"SACM: {context.goal}"[:120]
-        pull_request = GitHubAdapter(result["worktree_path"]).commit_push_and_open_pull_request(
-            title=title,
-            body=(
-                f"Automated SACM change for task `{context.task_id}`.\n\n"
-                "Codex execution and configured verification commands passed."
-            ),
-            branch_name=result["branch_name"],
-            base=os.getenv("SACM_GITHUB_BASE_BRANCH", "main"),
-            draft=True,
-        )
-        return {
-            "type": "PULL_REQUEST",
-            "created": pull_request["returncode"] == 0,
-            "stdout": pull_request["stdout"],
-            "stderr": pull_request["stderr"],
-        }

@@ -451,6 +451,31 @@ export type EvidenceVerification = {
   [key: string]: unknown
 }
 
+export type WorkflowProgressEntry = {
+  event_id: string
+  phase: string
+  status: string
+  agent?: string | null
+  step?: number | null
+  elapsed_ms: number
+  created_at: string
+  details: Record<string, unknown>
+}
+
+export type WorkflowProgress = {
+  schema_version: 'workflow-progress-status/v1'
+  task_id: string
+  task_status: string
+  state: 'running' | 'stalled' | 'finished' | 'failed'
+  lease_active: boolean
+  phase?: string | null
+  agent?: string | null
+  step?: number | null
+  elapsed_ms: number
+  last_update?: string | null
+  entries: WorkflowProgressEntry[]
+}
+
 export type DashboardProps = {
   baseUrl: string
   setBaseUrl: Dispatch<SetStateAction<string>>
@@ -480,6 +505,8 @@ export type DashboardProps = {
   supplyChainCompleteness?: SupplyChainCompleteness
   evidenceManifest?: Record<string, unknown>
   evidenceVerification?: EvidenceVerification
+  progress?: WorkflowProgress
+  progressError: string
   error: string
   loading: boolean
   loadRuns: () => Promise<void>

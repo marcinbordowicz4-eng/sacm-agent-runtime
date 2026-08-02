@@ -18,6 +18,7 @@ from apps.api.routes import (
     jira,
     memory,
     organizations,
+    progress,
     repository,
     resilience,
     router,
@@ -133,6 +134,12 @@ app.include_router(
     application_context.router,
     prefix="/v1",
     tags=["application-context"],
+    dependencies=authenticated_dependencies,
+)
+app.include_router(
+    progress.router,
+    prefix="/v1/tasks",
+    tags=["workflow-progress"],
     dependencies=authenticated_dependencies,
 )
 app.include_router(

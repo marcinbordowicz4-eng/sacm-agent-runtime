@@ -610,6 +610,7 @@ Pass the repository path through the API or CLI when creating tasks.
 - `GET /v1/tasks/{task_id}/execution-plan/policy`
 - `GET /v1/tasks/{task_id}/execution-plan/security-review`
 - `GET /v1/tasks/{task_id}/execution-plan/secret-requirements`
+- `GET /v1/tasks/{task_id}/progress`
 
 ## Delivery integrations
 
@@ -629,11 +630,19 @@ flows. Replace `APP_ID` and element IDs with target-app values before enabling
 `SACM_RUN_MOBILE_E2E=true`. The agent reports executed-flow evidence, never a
 checklist as a test result.
 
-Set `SACM_CODEX_AUTO_CREATE_PR=true` to have `CodexExecutor` commit, push, and
-open a **draft** PR after Codex succeeds **and** at least one configured verification
-command passes. It never merges the PR. The task cost endpoint
+After strict task verification completes, `SACM_AUTO_DRAFT_PR=true` makes SACM
+commit any remaining task-worktree diff, push the `sacm/` branch, and create or
+reuse one open **draft** PR. Delivery failures are recorded separately and do
+not rewrite successful technical verification; SACM never marks a PR ready or
+merges it. The task cost endpoint
 `GET /tasks/{task_id}/costs` aggregates only provider-reported token usage
 persisted for that task; tool durations are trace metadata, not inferred cost.
+
+Task worktrees never symlink the source repository's writable `node_modules`.
+Package-manager download caches are shared under
+`SACM_DEPENDENCY_CACHE_ROOT` using a package-manager and lockfile hash key, while
+every worktree owns its dependency installation. The same cache is mounted into
+Docker workspaces when a supported lockfile is present.
 
 ## OpenAI Agents SDK
 
@@ -738,6 +747,10 @@ See `.env.example` for defaults:
 - `DEFAULT_EMBEDDING_PROVIDER`
 - `DEFAULT_CONTEXT_DIM`
 - `SACM_WORKTREE_ROOT`
+- `SACM_DEPENDENCY_CACHE_ROOT`
+- `SACM_TASK_RUN_LEASE_SECONDS`
+- `SACM_TASK_RUN_HEARTBEAT_SECONDS`
+- `SACM_AUTO_DRAFT_PR`
 - `SACM_MAX_AGENT_STEPS`
 - `SACM_DEFAULT_TOKEN_BUDGET`
 - `SACM_WORKFLOW_BACKEND`

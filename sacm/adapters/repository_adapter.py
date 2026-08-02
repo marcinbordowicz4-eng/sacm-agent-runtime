@@ -1,8 +1,19 @@
+import hashlib
 import os
 import re
 import shlex
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
+
+
+@dataclass(frozen=True)
+class DependencyCache:
+    manager: str
+    cache_key: str
+    cache_path: Path
+    environment: dict[str, str]
+    install_command: list[str]
 
 
 class RepositoryError(Exception):
@@ -101,7 +112,7 @@ class RepositoryAdapter:
                 worktree_path.is_dir()
                 and self._worktree_branch(worktree_path) == branch_name
             ):
-                self._reuse_node_modules(worktree_path)
+                self._ensure_independent_node_modules(worktree_path)
                 return str(worktree_path)
             raise RepositoryOperationError(
                 f"Worktree path {worktree_path} already exists but is not attached "
@@ -134,25 +145,92 @@ class RepositoryAdapter:
                 worktree_path.is_dir()
                 and self._worktree_branch(worktree_path) == branch_name
             ):
-                self._reuse_node_modules(worktree_path)
+                self._ensure_independent_node_modules(worktree_path)
                 return str(worktree_path)
             raise
-        self._reuse_node_modules(worktree_path)
+        self._ensure_independent_node_modules(worktree_path)
         return str(worktree_path)
 
-    def _reuse_node_modules(self, worktree_path: Path) -> None:
-        source = self.repo_path / "node_modules"
+    def _ensure_independent_node_modules(self, worktree_path: Path) -> None:
         target = worktree_path / "node_modules"
-        if not source.exists() or not source.is_dir():
-            return
-        if target.exists() or target.is_symlink():
-            return
+        if target.is_symlink():
+            try:
+                target.unlink()
+            except OSError as exc:
+                raise RepositoryOperationError(
+                    f"Cannot remove unsafe shared dependency link {target}: {exc}"
+                ) from exc
+
+    def dependency_cache(self, worktree_path: str | Path) -> DependencyCache | None:
+        worktree = Path(worktree_path).resolve()
+        lockfile = self._dependency_lockfile(worktree)
+        if lockfile is None:
+            return None
+        manager, path = lockfile
+        digest = hashlib.sha256()
+        digest.update(f"{manager}\0{path.name}\0".encode())
+        digest.update(path.read_bytes())
+        cache_key = f"{manager}-{digest.hexdigest()[:24]}"
+        configured_root = os.getenv("SACM_DEPENDENCY_CACHE_ROOT")
+        if configured_root:
+            root = Path(configured_root).expanduser().resolve()
+        else:
+            worktree_root = os.getenv("SACM_WORKTREE_ROOT")
+            root = (
+                Path(worktree_root).expanduser().resolve()
+                if worktree_root
+                else (
+                    self.repo_path.parent
+                    / f".{self.repo_path.name}-sacm-dependency-cache"
+                ).resolve()
+            )
+        cache_path = root / manager / cache_key
         try:
-            target.symlink_to(source.resolve(), target_is_directory=True)
+            cache_path.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             raise RepositoryOperationError(
-                f"Cannot reuse repository dependencies in {worktree_path}: {exc}"
+                f"Cannot prepare dependency cache {cache_path}: {exc}"
             ) from exc
+        resolved_cache = cache_path.resolve()
+        if root != resolved_cache and root not in resolved_cache.parents:
+            raise RepositoryOperationError(
+                "Dependency cache path must remain inside SACM_DEPENDENCY_CACHE_ROOT."
+            )
+        environment = {
+            "npm": {"npm_config_cache": str(resolved_cache)},
+            "pnpm": {"pnpm_config_store_dir": str(resolved_cache)},
+            "yarn": {"YARN_CACHE_FOLDER": str(resolved_cache)},
+            "bun": {"BUN_INSTALL_CACHE_DIR": str(resolved_cache)},
+        }[manager]
+        install_command = {
+            "npm": ["npm", "ci", "--prefer-offline", "--no-audit", "--no-fund"],
+            "pnpm": ["pnpm", "install", "--frozen-lockfile", "--prefer-offline"],
+            "yarn": ["yarn", "install", "--immutable"],
+            "bun": ["bun", "install", "--frozen-lockfile"],
+        }[manager]
+        return DependencyCache(
+            manager=manager,
+            cache_key=cache_key,
+            cache_path=resolved_cache,
+            environment=environment,
+            install_command=install_command,
+        )
+
+    @staticmethod
+    def _dependency_lockfile(worktree_path: Path) -> tuple[str, Path] | None:
+        candidates = (
+            ("npm", "npm-shrinkwrap.json"),
+            ("npm", "package-lock.json"),
+            ("pnpm", "pnpm-lock.yaml"),
+            ("yarn", "yarn.lock"),
+            ("bun", "bun.lock"),
+            ("bun", "bun.lockb"),
+        )
+        for manager, filename in candidates:
+            path = worktree_path / filename
+            if path.is_file():
+                return manager, path
+        return None
 
     def _worktree_branch(self, worktree_path: Path) -> str | None:
         result = self._git(

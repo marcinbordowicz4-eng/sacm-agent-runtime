@@ -61,6 +61,18 @@ class WorkspaceManager:
         except PermissionError as exc:
             return {"returncode": 126, "stdout": "", "stderr": str(exc)}
 
+        dependency_cache_args: list[str] = []
+        if Path(workspace.repository_path).is_dir() and Path(workspace.path).is_dir():
+            dependency_cache = RepositoryAdapter(
+                workspace.repository_path
+            ).dependency_cache(workspace.path)
+            if dependency_cache:
+                dependency_cache_args = [
+                    "--volume",
+                    f"{dependency_cache.cache_path}:/dependency-cache:rw",
+                    "--env",
+                    f"{next(iter(dependency_cache.environment))}=/dependency-cache",
+                ]
         docker_command = [
             "docker",
             "run",
@@ -81,6 +93,7 @@ class WorkspaceManager:
             f"{memory_limit_mb}m",
             "--pids-limit",
             str(pids_limit),
+            *dependency_cache_args,
             "--volume",
             f"{Path(workspace.path).resolve()}:/workspace:rw",
             "--workdir",

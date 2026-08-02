@@ -28,14 +28,47 @@ class CodexExecutorAdapter:
     ) -> dict[str, Any]:
         branch_name = self._branch_name(task_id)
         worktree_path = self.repository.create_worktree(branch_name)
+        dependency_cache = self.repository.dependency_cache(worktree_path)
+        dependency_environment = (
+            dependency_cache.environment if dependency_cache else None
+        )
+        dependency_setup = None
+        if dependency_cache and not (Path(worktree_path) / "node_modules").is_dir():
+            dependency_setup = self._run(
+                dependency_cache.install_command,
+                worktree_path,
+                timeout=1_200,
+                environment=dependency_environment,
+            )
+        if dependency_setup and dependency_setup["returncode"] != 0:
+            return {
+                "branch_name": branch_name,
+                "worktree_path": worktree_path,
+                "codex": dependency_setup,
+                "verification": [],
+                "usage": [],
+                "diff": RepositoryAdapter(worktree_path).get_diff(),
+                "dependency_cache": {
+                    "manager": dependency_cache.manager,
+                    "cache_key": dependency_cache.cache_key,
+                    "prepared": False,
+                },
+                "dependency_setup": dependency_setup,
+            }
         codex = self._run(
             ["codex", "exec", "--full-auto", "--json", prompt],
             worktree_path,
             timeout=1_800,
+            environment=dependency_environment,
         )
-        dependency_bin = self.repository.repo_path / "node_modules" / ".bin"
+        dependency_bin = Path(worktree_path) / "node_modules" / ".bin"
         verification = [
-            self._run_verification(command, worktree_path, dependency_bin)
+            self._run_verification(
+                command,
+                worktree_path,
+                dependency_bin,
+                environment=dependency_environment,
+            )
             for command in verification_commands
             if command
         ]
@@ -47,6 +80,16 @@ class CodexExecutorAdapter:
             "verification": verification,
             "usage": usage,
             "diff": RepositoryAdapter(worktree_path).get_diff(),
+            "dependency_cache": (
+                {
+                    "manager": dependency_cache.manager,
+                    "cache_key": dependency_cache.cache_key,
+                    "prepared": True,
+                }
+                if dependency_cache
+                else None
+            ),
+            "dependency_setup": dependency_setup,
         }
 
     def _run_verification(
@@ -54,12 +97,15 @@ class CodexExecutorAdapter:
         command: str,
         worktree_path: str,
         dependency_bin: Path,
+        *,
+        environment: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         original = self._run(
             shlex.split(command),
             worktree_path,
             600,
             path_prefix=dependency_bin,
+            environment=environment,
         )
         reason = resource_failure_reason(original)
         retry_command = sequential_retry_command(command) if reason else None
@@ -82,6 +128,7 @@ class CodexExecutorAdapter:
             worktree_path,
             600,
             path_prefix=dependency_bin,
+            environment=environment,
         )
         retry_resource_reason = resource_failure_reason(retry)
         return {
@@ -118,14 +165,18 @@ class CodexExecutorAdapter:
         timeout: int,
         *,
         path_prefix: Path | None = None,
+        environment: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         started_at = time.monotonic()
         env = None
-        if path_prefix is not None:
+        if path_prefix is not None or environment:
             env = os.environ.copy()
-            env["PATH"] = os.pathsep.join(
-                [str(path_prefix), env.get("PATH", "")]
-            ).rstrip(os.pathsep)
+            if environment:
+                env.update(environment)
+            if path_prefix is not None:
+                env["PATH"] = os.pathsep.join(
+                    [str(path_prefix), env.get("PATH", "")]
+                ).rstrip(os.pathsep)
         try:
             completed = subprocess.run(
                 command,

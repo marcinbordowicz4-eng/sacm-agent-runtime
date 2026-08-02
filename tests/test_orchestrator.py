@@ -1,3 +1,5 @@
+import threading
+import time
 from datetime import datetime, timedelta
 from types import MethodType
 from unittest.mock import MagicMock
@@ -9,7 +11,10 @@ from sqlalchemy.orm import sessionmaker
 from sacm.agents.mlflow_experiment_agent import MLflowExperimentAgent
 from sacm.agents.otel_cost_agent import OpenTelemetryCostAgent
 from sacm.core.event_service import EventService
-from sacm.core.task_run_lease_service import TaskRunLeaseService
+from sacm.core.task_run_lease_service import (
+    TaskLeaseHeartbeatError,
+    TaskRunLeaseService,
+)
 from sacm.core.task_service import TaskService
 from sacm.infrastructure.db.models import Base, Task, TaskRunLease
 from sacm.schemas.context import AgentContext
@@ -76,9 +81,7 @@ def test_task_run_lease_acquire_conflict_expiry_and_release(db):
     with pytest.raises(RuntimeError, match="active orchestrator run"):
         service.acquire("task-1", now=started + timedelta(seconds=10))
 
-    replacement = service.acquire(
-        "task-1", now=started + timedelta(seconds=31)
-    )
+    replacement = service.acquire("task-1", now=started + timedelta(seconds=31))
     assert replacement != owner
     assert service.release("task-1", owner) is False
     assert service.release("task-1", replacement) is True
@@ -102,6 +105,99 @@ def test_task_run_lease_conflicts_across_database_sessions(tmp_path):
     finally:
         first.close()
         second.close()
+        engine.dispose()
+
+
+def test_task_run_lease_heartbeats_during_blocking_call(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'heartbeats.db'}")
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine)
+    db = sessions()
+    observer = sessions()
+    try:
+        _task(db)
+        service = TaskRunLeaseService(db, lease_seconds=2)
+        owner = service.acquire("task-1")
+        acquired_at = observer.get(TaskRunLease, "task-1").acquired_at
+
+        guard = service.guard(
+            "task-1",
+            owner,
+            interval_seconds=0.05,
+            session_factory=sessions,
+        )
+        with guard:
+            time.sleep(0.18)
+            observer.expire_all()
+            assert observer.get(TaskRunLease, "task-1").heartbeat_at > acquired_at
+
+        assert guard.alive is False
+        assert not any(
+            thread.name == "sacm-task-heartbeat-task-1" and thread.is_alive()
+            for thread in threading.enumerate()
+        )
+    finally:
+        db.close()
+        observer.close()
+        engine.dispose()
+
+
+def test_task_run_lease_heartbeat_thread_stops_on_blocking_error(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'heartbeat-error.db'}")
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine)
+    db = sessions()
+    try:
+        _task(db)
+        service = TaskRunLeaseService(db, lease_seconds=2)
+        owner = service.acquire("task-1")
+        guard = service.guard(
+            "task-1",
+            owner,
+            interval_seconds=0.05,
+            session_factory=sessions,
+        )
+
+        with pytest.raises(ValueError, match="blocking failed"):
+            with guard:
+                raise ValueError("blocking failed")
+
+        assert guard.alive is False
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_task_run_lease_heartbeat_detects_lease_loss(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'heartbeat-lost.db'}")
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine)
+    db = sessions()
+    competitor = sessions()
+    try:
+        _task(db)
+        service = TaskRunLeaseService(db, lease_seconds=2)
+        owner = service.acquire("task-1")
+        guard = service.guard(
+            "task-1",
+            owner,
+            interval_seconds=0.03,
+            session_factory=sessions,
+        )
+        stale_result_applied = False
+
+        with pytest.raises(TaskLeaseHeartbeatError, match="stale"):
+            with guard:
+                competitor.query(TaskRunLease).filter_by(task_id="task-1").delete()
+                competitor.commit()
+                time.sleep(0.12)
+            stale_result_applied = True
+
+        assert guard.alive is False
+        assert stale_result_applied is False
+    finally:
+        db.close()
+        competitor.close()
         engine.dispose()
 
 

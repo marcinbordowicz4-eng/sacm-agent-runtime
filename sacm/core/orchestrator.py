@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from sacm.core.agent_registry import AgentRegistry
 from sacm.core.context_compiler import ContextCompiler
 from sacm.core.context_engine_service import ContextEngineService
+from sacm.core.draft_pull_request_service import DraftPullRequestService
 from sacm.core.embedding_service import EmbeddingService
 from sacm.core.event_service import EventService
 from sacm.core.evidence_service import EvidenceService
@@ -137,6 +138,7 @@ class Orchestrator:
                 )
         steps_taken = 0
         verification_complete = False
+        delivery_result = None
         trace = self.observability.start_task(task_id, max_steps)
 
         for step_index in range(max_steps):
@@ -320,7 +322,8 @@ class Orchestrator:
                 started_at=started_at,
                 task_status=expected_task_status,
             )
-            agent_result = selected_agent.run_v1(agent_task)
+            with lease_service.guard(task_id, owner_token):
+                agent_result = selected_agent.run_v1(agent_task)
             result = selected_agent.result_from_v1(agent_result)
             lease_service.heartbeat(task_id, owner_token)
             if not self.task_service.is_current(
@@ -364,60 +367,66 @@ class Orchestrator:
                 started_at=started_at,
                 task_status=expected_task_status,
             )
-            verification = self.verifier.evaluate(
-                task,
-                result,
-                run_id=run_id,
-            )
-            self.event_service.save(
-                task_id,
-                "verification_matrix_v2",
-                verification.model_dump(mode="json"),
-            )
-            if (
-                verification.strict
-                and verification.technical_complete
-                and run_id is not None
-            ):
-                evidence = EvidenceService(self.db)
-                provisional_pack = evidence.build(
-                    run_id,
-                    trusted_internal=True,
+            with lease_service.guard(task_id, owner_token) as heartbeat:
+                verification = self.verifier.evaluate(
+                    task,
+                    result,
+                    run_id=run_id,
                 )
-                provisional_result = evidence.verify(
-                    run_id,
-                    provisional_pack.id,
-                    trusted_internal=True,
-                )
-                verification = self.verifier.finalize_evidence(
-                    verification,
-                    evidence_valid=provisional_result.status != "INVALID",
-                )
+                heartbeat.check()
                 self.event_service.save(
                     task_id,
                     "verification_matrix_v2",
                     verification.model_dump(mode="json"),
                 )
-                if verification.complete:
-                    final_pack = evidence.build(
+                if (
+                    verification.strict
+                    and verification.technical_complete
+                    and run_id is not None
+                ):
+                    evidence = EvidenceService(self.db)
+                    provisional_pack = evidence.build(
                         run_id,
                         trusted_internal=True,
                     )
-                    final_result = evidence.verify(
+                    heartbeat.check()
+                    provisional_result = evidence.verify(
                         run_id,
-                        final_pack.id,
+                        provisional_pack.id,
                         trusted_internal=True,
                     )
-                    if final_result.status == "INVALID":
-                        verification = self.verifier.finalize_evidence(
-                            verification,
-                            evidence_valid=False,
+                    heartbeat.check()
+                    verification = self.verifier.finalize_evidence(
+                        verification,
+                        evidence_valid=provisional_result.status != "INVALID",
+                    )
+                    self.event_service.save(
+                        task_id,
+                        "verification_matrix_v2",
+                        verification.model_dump(mode="json"),
+                    )
+                    if verification.complete:
+                        final_pack = evidence.build(
+                            run_id,
+                            trusted_internal=True,
                         )
-                        self.event_service.save(
-                            task_id,
-                            "verification_matrix_v2",
-                            verification.model_dump(mode="json"),
+                        heartbeat.check()
+                        final_result = evidence.verify(
+                            run_id,
+                            final_pack.id,
+                            trusted_internal=True,
                         )
+                        heartbeat.check()
+                        if final_result.status == "INVALID":
+                            verification = self.verifier.finalize_evidence(
+                                verification,
+                                evidence_valid=False,
+                            )
+                            self.event_service.save(
+                                task_id,
+                                "verification_matrix_v2",
+                                verification.model_dump(mode="json"),
+                            )
             done = verification.complete
             verification_complete = done
             lease_service.heartbeat(task_id, owner_token)
@@ -456,6 +465,15 @@ class Orchestrator:
             )
 
             if done:
+                delivery_service = DraftPullRequestService(self.db)
+                with lease_service.guard(task_id, owner_token):
+                    delivery_result = delivery_service.publish(
+                        task_id,
+                        verified=True,
+                        run_id=run_id,
+                    )
+                lease_service.heartbeat(task_id, owner_token)
+                delivery_service.record(task_id, delivery_result)
                 updated = self.task_service.mark_done(
                     task_id,
                     expected_status=expected_task_status,
@@ -505,6 +523,10 @@ class Orchestrator:
             "status": final_task.status,
             "steps": steps_taken,
             "last_events": last_events,
+            "delivery_status": (
+                delivery_result.get("status") if delivery_result else None
+            ),
+            "delivery": delivery_result,
         }
         trace.finish(
             {

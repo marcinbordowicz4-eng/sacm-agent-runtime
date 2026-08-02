@@ -47,9 +47,10 @@ Do not use this development policy as a production authorization policy.
    sacm runs evidence <run-id>
    ```
 
-4. Configure build/test commands for the target repository, then enable
-   `SACM_CODEX_AUTO_CREATE_PR=true` only after successful local verification.
-   Confirm that any resulting PR is a draft and that no merge occurs.
+4. Configure build/test commands for the target repository and keep
+   `SACM_AUTO_DRAFT_PR=true` to publish only after SACM's strict verification.
+   Confirm that repeated delivery reuses the open draft PR and that no ready or
+   merge action occurs.
 
 ## Benchmarks and security
 

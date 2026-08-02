@@ -21,6 +21,7 @@ import type {
   Step,
   SupplyChainCompleteness,
   SupplyChainRecord,
+  WorkflowProgress,
 } from './types'
 
 function DashboardApp() {
@@ -49,6 +50,8 @@ function DashboardApp() {
   const [supplyChainCompleteness, setSupplyChainCompleteness] = useState<SupplyChainCompleteness>()
   const [evidenceManifest, setEvidenceManifest] = useState<Record<string, unknown>>()
   const [evidenceVerification, setEvidenceVerification] = useState<EvidenceVerification>()
+  const [progress, setProgress] = useState<WorkflowProgress>()
+  const [progressError, setProgressError] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -158,6 +161,37 @@ function DashboardApp() {
   }, [])
   // oxlint-enable react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    const taskId = selected?.task_id
+    if (!taskId) {
+      setProgress(undefined)
+      setProgressError('')
+      return
+    }
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const next = await request<WorkflowProgress>(`/v1/tasks/${taskId}/progress`)
+        if (!cancelled) {
+          setProgress(next)
+          setProgressError('')
+        }
+      } catch (cause) {
+        if (!cancelled) {
+          setProgressError(cause instanceof Error ? cause.message : 'Unable to load live progress')
+        }
+      }
+    }
+    void poll()
+    const timer = window.setInterval(() => void poll(), 2_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  // Authentication and endpoint changes must restart polling.
+  // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.task_id, baseUrl, actor, token])
+
   const action = async (path: string, body?: Record<string, unknown>) => {
     if (!selected) return
     try {
@@ -213,6 +247,8 @@ function DashboardApp() {
     supplyChainCompleteness={supplyChainCompleteness}
     evidenceManifest={evidenceManifest}
     evidenceVerification={evidenceVerification}
+    progress={progress}
+    progressError={progressError}
     error={error}
     loading={loading}
     loadRuns={loadRuns}

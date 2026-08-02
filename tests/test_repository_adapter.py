@@ -51,9 +51,7 @@ def test_repository_path_allows_configured_worktree_root(tmp_path, monkeypatch):
     assert RepositoryAdapter(str(worktree)).repo_path == worktree.resolve()
 
 
-def test_repository_path_translates_host_mount_to_container_root(
-    tmp_path, monkeypatch
-):
+def test_repository_path_translates_host_mount_to_container_root(tmp_path, monkeypatch):
     host_root = tmp_path / "host"
     container_root = tmp_path / "container"
     (host_root / "project").mkdir(parents=True)
@@ -113,7 +111,7 @@ def test_create_worktree_is_idempotent(tmp_path, monkeypatch):
     assert second == first
 
 
-def test_create_worktree_reuses_source_node_modules_without_overwriting(
+def test_create_worktree_never_links_or_deletes_source_node_modules(
     tmp_path, monkeypatch
 ):
     repository = tmp_path / "repository"
@@ -142,8 +140,9 @@ def test_create_worktree_reuses_source_node_modules_without_overwriting(
         RepositoryAdapter(str(repository)).create_worktree("sacm/task/workspace")
     )
 
-    assert (worktree / "node_modules").is_symlink()
-    assert (worktree / "node_modules").resolve() == dependencies.resolve()
+    assert not (worktree / "node_modules").exists()
+    assert not (worktree / "node_modules").is_symlink()
+    assert (dependencies / "marker").read_text() == "source"
 
     subprocess.run(
         ["git", "worktree", "remove", "--force", str(worktree)],
@@ -153,7 +152,7 @@ def test_create_worktree_reuses_source_node_modules_without_overwriting(
     assert (dependencies / "marker").read_text() == "source"
 
 
-def test_dependency_reuse_never_overwrites_existing_node_modules(tmp_path):
+def test_worktree_setup_never_overwrites_existing_node_modules(tmp_path):
     repository = tmp_path / "repository"
     worktree = tmp_path / "worktree"
     (repository / "node_modules").mkdir(parents=True)
@@ -161,13 +160,13 @@ def test_dependency_reuse_never_overwrites_existing_node_modules(tmp_path):
     (worktree / "node_modules" / "marker").write_text("worktree")
     adapter = RepositoryAdapter(str(repository))
 
-    adapter._reuse_node_modules(worktree)
+    adapter._ensure_independent_node_modules(worktree)
 
     assert not (worktree / "node_modules").is_symlink()
     assert (worktree / "node_modules" / "marker").read_text() == "worktree"
 
 
-def test_dependency_reuse_never_overwrites_existing_symlink(tmp_path):
+def test_worktree_setup_removes_legacy_shared_node_modules_symlink(tmp_path):
     repository = tmp_path / "repository"
     worktree = tmp_path / "worktree"
     existing_dependencies = tmp_path / "existing"
@@ -179,18 +178,76 @@ def test_dependency_reuse_never_overwrites_existing_symlink(tmp_path):
     )
     adapter = RepositoryAdapter(str(repository))
 
-    adapter._reuse_node_modules(worktree)
+    adapter._ensure_independent_node_modules(worktree)
 
-    assert (worktree / "node_modules").resolve() == existing_dependencies.resolve()
+    assert not (worktree / "node_modules").exists()
+    assert (existing_dependencies).is_dir()
+
+
+def test_dependency_cache_is_reused_with_independent_worktree_dependencies(
+    tmp_path, monkeypatch
+):
+    repository = tmp_path / "repository"
+    first = tmp_path / "worktrees" / "first"
+    second = tmp_path / "worktrees" / "second"
+    repository.mkdir()
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    lock = '{"lockfileVersion": 3, "packages": {}}'
+    (first / "package-lock.json").write_text(lock)
+    (second / "package-lock.json").write_text(lock)
+    cache_root = tmp_path / "dependency-cache"
+    monkeypatch.setenv("SACM_DEPENDENCY_CACHE_ROOT", str(cache_root))
+    adapter = RepositoryAdapter(str(repository))
+
+    first_cache = adapter.dependency_cache(first)
+    second_cache = adapter.dependency_cache(second)
+    (first / "node_modules").mkdir()
+    (second / "node_modules").mkdir()
+    (first / "node_modules" / "marker").write_text("first")
+    (second / "node_modules" / "marker").write_text("second")
+
+    assert first_cache is not None
+    assert second_cache is not None
+    assert first_cache.cache_key == second_cache.cache_key
+    assert first_cache.cache_path == second_cache.cache_path
+    assert first_cache.environment["npm_config_cache"] == str(first_cache.cache_path)
+    assert first_cache.install_command == [
+        "npm",
+        "ci",
+        "--prefer-offline",
+        "--no-audit",
+        "--no-fund",
+    ]
+    assert (first / "node_modules" / "marker").read_text() == "first"
+    assert (second / "node_modules" / "marker").read_text() == "second"
+
+
+def test_dependency_cache_lockfile_change_invalidates_key(tmp_path, monkeypatch):
+    repository = tmp_path / "repository"
+    worktree = tmp_path / "worktree"
+    repository.mkdir()
+    worktree.mkdir()
+    lockfile = worktree / "package-lock.json"
+    monkeypatch.setenv("SACM_DEPENDENCY_CACHE_ROOT", str(tmp_path / "dependency-cache"))
+    adapter = RepositoryAdapter(str(repository))
+
+    lockfile.write_text('{"lockfileVersion": 3, "packages": {}}')
+    first = adapter.dependency_cache(worktree)
+    lockfile.write_text('{"lockfileVersion": 3, "packages": {"node_modules/x": {}}}')
+    second = adapter.dependency_cache(worktree)
+
+    assert first is not None
+    assert second is not None
+    assert first.cache_key != second.cache_key
+    assert first.cache_path != second.cache_path
 
 
 def test_create_worktree_reports_missing_git(temp_repo, monkeypatch):
     def missing_git(*args, **kwargs):
         raise FileNotFoundError
 
-    monkeypatch.setattr(
-        "sacm.adapters.repository_adapter.subprocess.run", missing_git
-    )
+    monkeypatch.setattr("sacm.adapters.repository_adapter.subprocess.run", missing_git)
 
     with pytest.raises(RepositoryOperationError, match="Git executable"):
         RepositoryAdapter(str(temp_repo)).create_worktree("sacm/task/workspace")

@@ -287,9 +287,7 @@ def test_local_workflow_does_not_reopen_completed_run_on_analytics_failure(
     assert RunService(db).list_steps(run.id)[0].status == "COMPLETED"
 
 
-def test_late_executor_failure_does_not_overwrite_newer_resumed_phase(
-    db, monkeypatch
-):
+def test_late_executor_failure_does_not_overwrite_newer_resumed_phase(db, monkeypatch):
     run = _create_run(db)
 
     class StaleFailingOrchestrator:
@@ -672,3 +670,43 @@ def test_workspace_can_use_gvisor_runtime(monkeypatch):
     WorkspaceManager().execute(workspace, "python:3.12", ["pytest"])
 
     assert command["args"][command["args"].index("--runtime") + 1] == "runsc"
+
+
+def test_workspace_mounts_lockfile_keyed_package_cache(monkeypatch, tmp_path):
+    command = {}
+    repository = tmp_path / "repository"
+    workspace_path = tmp_path / "worktree"
+    repository.mkdir()
+    workspace_path.mkdir()
+    (workspace_path / "package-lock.json").write_text(
+        '{"lockfileVersion": 3, "packages": {}}'
+    )
+    monkeypatch.setenv("SACM_DEPENDENCY_CACHE_ROOT", str(tmp_path / "dependency-cache"))
+
+    class Completed:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    def fake_run(args, **kwargs):
+        command["args"] = args
+        return Completed()
+
+    monkeypatch.setattr("sacm.core.workspace.subprocess.run", fake_run)
+    workspace = WorkspaceRef(
+        run_id="run-1",
+        repository_path=str(repository),
+        path=str(workspace_path),
+        branch_name="sacm/run-1/workspace",
+    )
+
+    WorkspaceManager().execute(workspace, "node:22", ["npm", "ci"])
+
+    volumes = [
+        command["args"][index + 1]
+        for index, value in enumerate(command["args"])
+        if value == "--volume"
+    ]
+    environment = command["args"][command["args"].index("--env") + 1]
+    assert any(volume.endswith(":/dependency-cache:rw") for volume in volumes)
+    assert environment == "npm_config_cache=/dependency-cache"

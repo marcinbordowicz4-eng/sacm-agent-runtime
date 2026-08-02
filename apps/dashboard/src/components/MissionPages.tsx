@@ -7,6 +7,7 @@ import type {
   RunAnalytics,
 } from '../types'
 import { Meta, MissingData, Status, TagList } from './DashboardPrimitives'
+import { LiveProgress } from './LiveProgress'
 
 const average = (values: (number | null | undefined)[]) => {
   const recorded = values.filter((value): value is number => value !== null && value !== undefined)
@@ -193,6 +194,7 @@ export function MissionsPage(props: DashboardProps) {
       <b>{run.task_id.slice(0, 8)}</b><Status value={run.status} /><small>{date(run.updated_at)}</small>
     </button>)}</div>
     <DataState analytics={analytics} />
+    <LiveProgress progress={props.progress} error={props.progressError} />
     <section className="mission-facts" aria-label="Mission identity">
       <div><span>Source</span><strong>{taskSource}</strong><small>{context?.task.external_url ? <a href={context.task.external_url} target="_blank" rel="noreferrer">{context.task.external_id || 'Open source task'}</a> : context?.task.external_id || 'External ID not recorded'}</small></div>
       <div><span>Application</span><strong>{context?.project?.name || 'Not linked'}</strong><small>{context?.project?.repository_full_name || 'Repository not recorded'}</small></div>

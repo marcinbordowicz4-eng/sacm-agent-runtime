@@ -37,6 +37,10 @@ def test_github_adapter_refuses_non_sacm_delivery_branch(tmp_path):
         adapter.push_branch("main")
     with pytest.raises(ValueError, match="sacm/ branches"):
         adapter.open_pull_request("Title", "Body", "feature/change")
+    with pytest.raises(ValueError, match="sacm/ branches"):
+        adapter.commit_push_and_open_pull_request(
+            "Title", "Body", "feature/change", "main"
+        )
 
 
 def test_github_adapter_never_merges_pull_requests(tmp_path):
@@ -52,9 +56,7 @@ def test_codex_executor_parses_json_lines_only():
     ]
 
 
-def test_codex_executor_prepends_repository_dependencies_to_path(
-    monkeypatch, tmp_path
-):
+def test_codex_executor_prepends_repository_dependencies_to_path(monkeypatch, tmp_path):
     recorded = {}
 
     def fake_run(command, **kwargs):
@@ -69,9 +71,48 @@ def test_codex_executor_prepends_repository_dependencies_to_path(
         str(tmp_path),
         600,
         path_prefix=dependency_bin,
+        environment={"npm_config_cache": "/safe/npm-cache"},
     )
 
     assert recorded["env"]["PATH"].split(":")[0] == str(dependency_bin)
+    assert recorded["env"]["npm_config_cache"] == "/safe/npm-cache"
+
+
+def test_codex_executor_prepares_independent_dependencies(monkeypatch, tmp_path):
+    adapter = CodexExecutorAdapter(str(tmp_path))
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    calls = []
+    cache = SimpleNamespace(
+        manager="npm",
+        cache_key="npm-key",
+        environment={"npm_config_cache": "/safe/npm-cache"},
+        install_command=["npm", "ci", "--prefer-offline"],
+    )
+    monkeypatch.setattr(adapter.repository, "create_worktree", lambda branch: str(worktree))
+    monkeypatch.setattr(adapter.repository, "dependency_cache", lambda path: cache)
+    monkeypatch.setattr(
+        "sacm.adapters.codex_executor_adapter.RepositoryAdapter.get_diff",
+        lambda self: "",
+    )
+
+    def fake_run(command, cwd, timeout, **kwargs):
+        calls.append(command)
+        return {
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+            "events": [],
+            "duration_ms": 1,
+        }
+
+    monkeypatch.setattr(adapter, "_run", fake_run)
+
+    result = adapter.execute("task-1", "implement", [])
+
+    assert calls[0] == ["npm", "ci", "--prefer-offline"]
+    assert calls[1][0:2] == ["codex", "exec"]
+    assert result["dependency_cache"]["prepared"] is True
 
 
 def test_codex_verification_retries_resource_failure_in_band(monkeypatch, tmp_path):
@@ -136,49 +177,6 @@ def test_codex_executor_agent_requires_target_repository():
     result = CodexExecutorAgent().run(_context())
 
     assert result.next_state_hint == "blocked"
-
-
-def test_codex_auto_pr_requires_successful_verification(monkeypatch):
-    monkeypatch.setenv("SACM_CODEX_AUTO_CREATE_PR", "true")
-
-    action = CodexExecutorAgent._open_pull_request(
-        _context(),
-        {"verification": [], "worktree_path": ".", "branch_name": "sacm/task"},
-        success=True,
-    )
-
-    assert action == {
-        "type": "PULL_REQUEST",
-        "created": False,
-        "reason": "Codex and at least one verification command must succeed.",
-    }
-
-
-def test_codex_auto_pr_runs_only_after_successful_verification(monkeypatch):
-    class FakeGitHubAdapter:
-        def __init__(self, repo_path):
-            self.repo_path = repo_path
-
-        def commit_push_and_open_pull_request(self, **kwargs):
-            assert kwargs["branch_name"] == "sacm/task"
-            assert kwargs["base"] == "main"
-            return {"returncode": 0, "stdout": "https://example.test/pr/1", "stderr": ""}
-
-    monkeypatch.setenv("SACM_CODEX_AUTO_CREATE_PR", "true")
-    monkeypatch.setattr("sacm.agents.codex_executor.GitHubAdapter", FakeGitHubAdapter)
-
-    action = CodexExecutorAgent._open_pull_request(
-        _context(),
-        {
-            "verification": [{"returncode": 0}],
-            "worktree_path": "/worktree",
-            "branch_name": "sacm/task",
-        },
-        success=True,
-    )
-
-    assert action["created"] is True
-    assert action["type"] == "PULL_REQUEST"
 
 
 def test_openai_agents_adapter_uses_private_tracing(monkeypatch):
