@@ -62,6 +62,12 @@ class LocalWorkflow:
                     "WorkflowImplementing",
                     step_id=step.id,
                 )
+            self.db.expire_all()
+            execution_run = self.runs.get(run_id)
+            if execution_run is None:
+                raise ValueError(f"Run {run_id} disappeared during execution")
+            expected_run_status = execution_run.status
+            expected_run_updated_at = execution_run.updated_at
             try:
                 output = Orchestrator(self.db).run_task(
                     run.task_id,
@@ -69,11 +75,22 @@ class LocalWorkflow:
                     **({"max_steps": max_steps} if max_steps else {}),
                     recovery_context=self._recovery_context(step),
                 )
+                self.db.expire_all()
                 current_run = self.runs.get(run_id)
                 if current_run is None:
                     raise ValueError(f"Run {run_id} disappeared during execution")
-                if current_run.cancellation_requested:
-                    return {"run_id": run_id, "status": self.runs.cancel(run_id).status}
+                if current_run.cancellation_requested or current_run.status == "CANCELLED":
+                    return {"run_id": run_id, "status": current_run.status}
+                if (
+                    current_run.status != expected_run_status
+                    or current_run.updated_at != expected_run_updated_at
+                ):
+                    return {
+                        "run_id": run_id,
+                        "status": current_run.status,
+                        "output": output,
+                        "stale_result_ignored": True,
+                    }
                 if output["status"] != "done":
                     raise RuntimeError(
                         "The orchestrator did not produce a verified completed task."
@@ -145,6 +162,24 @@ class LocalWorkflow:
                     "analytics": {"status": "COMPLETED"},
                 }
             except Exception as exc:
+                self.db.expire_all()
+                current_run = self.runs.get(run_id)
+                if current_run is None:
+                    raise ValueError(
+                        f"Run {run_id} disappeared during execution"
+                    ) from exc
+                if (
+                    current_run.cancellation_requested
+                    or current_run.status == "CANCELLED"
+                    or current_run.status != expected_run_status
+                    or current_run.updated_at != expected_run_updated_at
+                ):
+                    return {
+                        "run_id": run_id,
+                        "status": current_run.status,
+                        "error": str(exc),
+                        "stale_result_ignored": True,
+                    }
                 failure = {"type": exc.__class__.__name__, "message": str(exc)}
                 self.runs.fail_step(run_id, step.id, failure)
                 step, _, decision = RecoveryService(self.db).handle(

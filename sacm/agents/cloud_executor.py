@@ -1,6 +1,10 @@
 import subprocess
 
 from sacm.agents.base import Agent
+from sacm.core.verification_execution import (
+    resource_failure_reason,
+    sequential_retry_command,
+)
 from sacm.schemas.context import AgentContext
 from sacm.schemas.result import AgentResult
 
@@ -32,29 +36,42 @@ class CloudExecutorAgent(Agent):
                     )
 
         executions = []
+        retry_evidence = []
+        command_outcomes = []
         try:
             for command in commands:
-                proc = subprocess.run(
-                    command,
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=600,
-                    cwd=context.target_repo_path,
-                )
-                executions.append(
-                    {
-                        "command": command,
-                        "returncode": proc.returncode,
-                        "stdout": proc.stdout[-4_000:],
-                        "stderr": proc.stderr[-4_000:],
-                    }
-                )
-                if proc.returncode != 0:
+                original = self._execute_command(command, context.target_repo_path)
+                executions.append(original)
+                reason = resource_failure_reason(original)
+                retry_command = sequential_retry_command(command) if reason else None
+                if retry_command:
+                    retry = self._execute_command(
+                        retry_command, context.target_repo_path
+                    )
+                    executions.append(retry)
+                    retry_evidence.append(
+                        {
+                            "reason": reason,
+                            "classification": "ENVIRONMENT",
+                            "category": "INFRASTRUCTURE_RESOURCE",
+                            "original": original,
+                            "retry": retry,
+                        }
+                    )
+                    command_outcomes.append(retry["returncode"] == 0)
+                    if retry["returncode"] != 0:
+                        break
+                    continue
+                command_outcomes.append(original["returncode"] == 0)
+                if original["returncode"] != 0:
                     break
 
-            success = len(executions) == len(commands) and all(
-                execution["returncode"] == 0 for execution in executions
+            success = len(command_outcomes) == len(commands) and all(
+                command_outcomes
+            )
+            last_execution = executions[-1]
+            resource_failure = (
+                not success and resource_failure_reason(last_execution) is not None
             )
             conf = 1.0 if success else 0.3
             return AgentResult(
@@ -73,10 +90,22 @@ class CloudExecutorAgent(Agent):
                         }
                         for execution in executions
                     ],
+                    *[
+                        {"type": "VERIFICATION_RETRY", **evidence}
+                        for evidence in retry_evidence
+                    ],
                     {
                         "type": "VERIFICATION",
                         "passed": success,
                         "commands": executions,
+                        **(
+                            {
+                                "failure_classification": "ENVIRONMENT",
+                                "failure_reason": "INFRASTRUCTURE_RESOURCE",
+                            }
+                            if resource_failure
+                            else {}
+                        ),
                     },
                 ],
                 artifacts=[
@@ -84,10 +113,18 @@ class CloudExecutorAgent(Agent):
                         "type": "verification",
                         "passed": success,
                         "commands": executions,
-                    }
+                    },
+                    *[
+                        {"type": "execution_evidence", **evidence}
+                        for evidence in retry_evidence
+                    ],
                 ],
                 confidence=conf,
-                next_state_hint="reviewing" if success else "debugging",
+                next_state_hint=(
+                    "reviewing"
+                    if success
+                    else ("blocked" if resource_failure else "debugging")
+                ),
                 memory_update=(
                     "Verification: "
                     + ", ".join(
@@ -127,3 +164,20 @@ class CloudExecutorAgent(Agent):
                 next_state_hint="blocked",
                 skills_contributed=[],
             )
+
+    @staticmethod
+    def _execute_command(command: str, cwd: str | None) -> dict:
+        proc = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=600,
+            cwd=cwd,
+        )
+        return {
+            "command": command,
+            "returncode": proc.returncode,
+            "stdout": proc.stdout[-4_000:],
+            "stderr": proc.stderr[-4_000:],
+        }

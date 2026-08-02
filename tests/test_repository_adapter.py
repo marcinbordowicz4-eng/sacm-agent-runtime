@@ -1,4 +1,5 @@
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -110,6 +111,77 @@ def test_create_worktree_is_idempotent(tmp_path, monkeypatch):
     second = adapter.create_worktree("sacm/task/workspace")
 
     assert second == first
+
+
+def test_create_worktree_reuses_source_node_modules_without_overwriting(
+    tmp_path, monkeypatch
+):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=repository,
+        check=True,
+    )
+    (repository / "README.md").write_text("# Test")
+    (repository / ".gitignore").write_text("node_modules/\n")
+    dependencies = repository / "node_modules"
+    dependencies.mkdir()
+    (dependencies / "marker").write_text("source")
+    subprocess.run(["git", "add", "."], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-qm", "initial"], cwd=repository, check=True)
+    monkeypatch.setenv("SACM_WORKTREE_ROOT", str(tmp_path / "worktrees"))
+
+    worktree = Path(
+        RepositoryAdapter(str(repository)).create_worktree("sacm/task/workspace")
+    )
+
+    assert (worktree / "node_modules").is_symlink()
+    assert (worktree / "node_modules").resolve() == dependencies.resolve()
+
+    subprocess.run(
+        ["git", "worktree", "remove", "--force", str(worktree)],
+        cwd=repository,
+        check=True,
+    )
+    assert (dependencies / "marker").read_text() == "source"
+
+
+def test_dependency_reuse_never_overwrites_existing_node_modules(tmp_path):
+    repository = tmp_path / "repository"
+    worktree = tmp_path / "worktree"
+    (repository / "node_modules").mkdir(parents=True)
+    (worktree / "node_modules").mkdir(parents=True)
+    (worktree / "node_modules" / "marker").write_text("worktree")
+    adapter = RepositoryAdapter(str(repository))
+
+    adapter._reuse_node_modules(worktree)
+
+    assert not (worktree / "node_modules").is_symlink()
+    assert (worktree / "node_modules" / "marker").read_text() == "worktree"
+
+
+def test_dependency_reuse_never_overwrites_existing_symlink(tmp_path):
+    repository = tmp_path / "repository"
+    worktree = tmp_path / "worktree"
+    existing_dependencies = tmp_path / "existing"
+    (repository / "node_modules").mkdir(parents=True)
+    existing_dependencies.mkdir()
+    worktree.mkdir()
+    (worktree / "node_modules").symlink_to(
+        existing_dependencies, target_is_directory=True
+    )
+    adapter = RepositoryAdapter(str(repository))
+
+    adapter._reuse_node_modules(worktree)
+
+    assert (worktree / "node_modules").resolve() == existing_dependencies.resolve()
 
 
 def test_create_worktree_reports_missing_git(temp_repo, monkeypatch):

@@ -74,6 +74,45 @@ def test_codex_executor_prepends_repository_dependencies_to_path(
     assert recorded["env"]["PATH"].split(":")[0] == str(dependency_bin)
 
 
+def test_codex_verification_retries_resource_failure_in_band(monkeypatch, tmp_path):
+    adapter = CodexExecutorAdapter(str(tmp_path))
+    results = iter(
+        [
+            {
+                "returncode": 137,
+                "stdout": "",
+                "stderr": "worker received SIGKILL",
+                "events": [],
+                "duration_ms": 10,
+            },
+            {
+                "returncode": 0,
+                "stdout": "passed",
+                "stderr": "",
+                "events": [],
+                "duration_ms": 20,
+            },
+        ]
+    )
+    commands = []
+
+    def fake_run(command, *args, **kwargs):
+        commands.append(command)
+        return next(results)
+
+    monkeypatch.setattr(adapter, "_run", fake_run)
+
+    result = adapter._run_verification(
+        "npx jest",
+        str(tmp_path),
+        tmp_path / "node_modules" / ".bin",
+    )
+
+    assert commands == [["npx", "jest"], ["npx", "jest", "--runInBand"]]
+    assert result["returncode"] == 0
+    assert result["retry_evidence"]["original"]["returncode"] == 137
+
+
 def test_codex_executor_extracts_only_provider_reported_usage():
     usage = CodexExecutorAdapter._usage_from_events(
         [

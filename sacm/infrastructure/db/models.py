@@ -109,6 +109,20 @@ class Task(Base):
     )
 
 
+class TaskRunLease(Base):
+    __tablename__ = "task_run_leases"
+
+    task_id: Mapped[str] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True
+    )
+    owner_token: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    acquired_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, index=True
+    )
+
+
 class TaskClarification(Base):
     __tablename__ = "task_clarifications"
     __table_args__ = (

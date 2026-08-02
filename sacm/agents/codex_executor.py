@@ -38,6 +38,10 @@ class CodexExecutorAgent(Agent):
         )
         codex_succeeded = result["codex"]["returncode"] == 0
         success = codex_succeeded and verification_passed
+        resource_failure = any(
+            command.get("failure_reason") == "INFRASTRUCTURE_RESOURCE"
+            for command in result["verification"]
+        )
         usage = self._usage_artifacts(result["usage"])
         tool_execution = self._tool_artifacts(result)
         pull_request = self._open_pull_request(context, result, success)
@@ -57,6 +61,14 @@ class CodexExecutorAgent(Agent):
                     "returncode": result["codex"]["returncode"],
                 }
             ]
+            + [
+                {
+                    "type": "VERIFICATION_RETRY",
+                    **command["retry_evidence"],
+                }
+                for command in result["verification"]
+                if command.get("retry_evidence")
+            ]
             + ([pull_request] if pull_request else []),
             artifacts=[
                 {"type": "diff", "content": result["diff"][:20_000]},
@@ -70,7 +82,9 @@ class CodexExecutorAgent(Agent):
                 *tool_execution,
             ],
             confidence=1.0 if success else 0.2,
-            next_state_hint="testing" if success else "debugging",
+            next_state_hint=(
+                "testing" if success else ("blocked" if resource_failure else "debugging")
+            ),
             memory_update=summary,
             skills_contributed=[
                 {

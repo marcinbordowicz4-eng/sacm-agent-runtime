@@ -1,4 +1,5 @@
 import os
+import time
 
 from sqlalchemy.orm import Session
 
@@ -14,6 +15,7 @@ from sacm.core.observability import ObservabilityService
 from sacm.core.outcome_router_service import OutcomeRouterService
 from sacm.core.router import RouterService
 from sacm.core.state_service import StateService
+from sacm.core.task_run_lease_service import TaskRunLeaseService
 from sacm.core.task_service import TaskService
 from sacm.core.verifier import Verifier
 from sacm.schemas.application_context import ContextExpansionRequest
@@ -53,9 +55,88 @@ class Orchestrator:
         if not task:
             raise ValueError(f"Task {task_id} not found")
 
+        lease_service = TaskRunLeaseService(self.db)
+        owner_token = lease_service.acquire(task_id)
+        started_at = time.monotonic()
+        try:
+            lease_service.heartbeat(task_id, owner_token)
+            self._save_progress(
+                task_id,
+                run_id,
+                phase="run",
+                status="started",
+                step=0,
+                started_at=started_at,
+                task_status=task.status,
+            )
+            response = self._run_task_locked(
+                task_id,
+                max_steps=max_steps,
+                run_id=run_id,
+                recovery_context=recovery_context,
+                lease_service=lease_service,
+                owner_token=owner_token,
+                started_at=started_at,
+            )
+            self._save_progress(
+                task_id,
+                run_id,
+                phase="run",
+                status="finished",
+                step=response["steps"],
+                started_at=started_at,
+                task_status=response["status"],
+            )
+            return response
+        except Exception as exc:
+            if not self.db.is_active:
+                self.db.rollback()
+            try:
+                current = self.task_service.get(task_id)
+                self._save_progress(
+                    task_id,
+                    run_id,
+                    phase="run",
+                    status="failed",
+                    step=None,
+                    started_at=started_at,
+                    task_status=current.status if current else None,
+                    error_type=exc.__class__.__name__,
+                    error=str(exc),
+                )
+            except Exception:
+                self.db.rollback()
+            raise
+        finally:
+            lease_service.release(task_id, owner_token)
+
+    def _run_task_locked(
+        self,
+        task_id: str,
+        *,
+        max_steps: int,
+        run_id: str | None,
+        recovery_context: dict | None,
+        lease_service: TaskRunLeaseService,
+        owner_token: str,
+        started_at: float,
+    ) -> dict:
+        task = self.task_service.get(task_id)
+        if not task:
+            raise ValueError(f"Task {task_id} not found")
         if self._should_initialize_planning(task.status):
-            self.task_service.update_status(task_id, "planning")
+            initialized = self.task_service.update_status(
+                task_id,
+                "planning",
+                expected_status=task.status,
+                expected_updated_at=task.updated_at,
+            )
+            if not initialized:
+                raise RuntimeError(
+                    f"Task {task_id} changed while the orchestrator was starting."
+                )
         steps_taken = 0
+        verification_complete = False
         trace = self.observability.start_task(task_id, max_steps)
 
         for step_index in range(max_steps):
@@ -63,6 +144,8 @@ class Orchestrator:
             task = self.task_service.get(task_id)
             if not task:
                 raise ValueError(f"Task {task_id} not found during execution")
+            expected_task_status = task.status
+            expected_task_updated_at = task.updated_at
 
             history = self.event_service.get_recent_events(task_id)
             recovery_action = (
@@ -226,8 +309,39 @@ class Orchestrator:
             )
             if recovery_context:
                 agent_task.execution_context["recovery"] = recovery_context
+            lease_service.heartbeat(task_id, owner_token)
+            self._save_progress(
+                task_id,
+                run_id,
+                phase=expected_task_status,
+                status="agent_started",
+                agent=selected_agent.name,
+                step=step_index + 1,
+                started_at=started_at,
+                task_status=expected_task_status,
+            )
             agent_result = selected_agent.run_v1(agent_task)
             result = selected_agent.result_from_v1(agent_result)
+            lease_service.heartbeat(task_id, owner_token)
+            if not self.task_service.is_current(
+                task_id,
+                expected_status=expected_task_status,
+                expected_updated_at=expected_task_updated_at,
+            ):
+                raise RuntimeError(
+                    f"Task {task_id} changed during agent execution; "
+                    "the stale orchestrator result was not applied."
+                )
+            self._save_progress(
+                task_id,
+                run_id,
+                phase=expected_task_status,
+                status="agent_finished",
+                agent=selected_agent.name,
+                step=step_index + 1,
+                started_at=started_at,
+                task_status=expected_task_status,
+            )
 
             self.event_service.save_agent_result(
                 task_id,
@@ -239,6 +353,17 @@ class Orchestrator:
             self.memory_service.add_from_agent_result(task_id, result)
             self.state_service.update_belief_state(task_id, routing_result["next_belief"])
 
+            lease_service.heartbeat(task_id, owner_token)
+            self._save_progress(
+                task_id,
+                run_id,
+                phase=expected_task_status,
+                status="verification_started",
+                agent=selected_agent.name,
+                step=step_index + 1,
+                started_at=started_at,
+                task_status=expected_task_status,
+            )
             verification = self.verifier.evaluate(
                 task,
                 result,
@@ -294,6 +419,19 @@ class Orchestrator:
                             verification.model_dump(mode="json"),
                         )
             done = verification.complete
+            verification_complete = done
+            lease_service.heartbeat(task_id, owner_token)
+            self._save_progress(
+                task_id,
+                run_id,
+                phase=expected_task_status,
+                status="verification_finished",
+                agent=selected_agent.name,
+                step=step_index + 1,
+                started_at=started_at,
+                task_status=expected_task_status,
+                verification_complete=done,
+            )
             trace.record(
                 "sacm.agent_result",
                 "chain",
@@ -318,18 +456,48 @@ class Orchestrator:
             )
 
             if done:
-                self.task_service.mark_done(task_id)
+                updated = self.task_service.mark_done(
+                    task_id,
+                    expected_status=expected_task_status,
+                    expected_updated_at=expected_task_updated_at,
+                )
+                if not updated:
+                    raise RuntimeError(
+                        f"Task {task_id} changed before verified completion; "
+                        "the stale orchestrator result was not applied."
+                    )
                 break
 
             if result.next_state_hint:
-                self.task_service.update_status(
+                updated = self.task_service.update_status(
                     task_id,
                     self._unverified_next_state(result.next_state_hint),
+                    expected_status=expected_task_status,
+                    expected_updated_at=expected_task_updated_at,
                 )
+                if not updated:
+                    raise RuntimeError(
+                        f"Task {task_id} changed before phase transition; "
+                        "the stale orchestrator result was not applied."
+                    )
 
         final_task = self.task_service.get(task_id)
         if not final_task:
             raise ValueError(f"Task {task_id} missing after execution")
+        if final_task.status == "done" and not verification_complete:
+            repaired = self.task_service.update_status(
+                task_id,
+                "testing",
+                expected_status=final_task.status,
+                expected_updated_at=final_task.updated_at,
+            )
+            if not repaired:
+                raise RuntimeError(
+                    f"Task {task_id} changed while preventing unverified completion."
+                )
+            final_task = self.task_service.get(task_id)
+            if not final_task:
+                raise ValueError(f"Task {task_id} missing after execution")
         events = self.event_service.get_recent_events(task_id, limit=5)
         last_events = [event.payload for event in events]
         response = {
@@ -346,6 +514,36 @@ class Orchestrator:
             }
         )
         return response
+
+    def _save_progress(
+        self,
+        task_id: str,
+        run_id: str | None,
+        *,
+        phase: str,
+        status: str,
+        step: int | None,
+        started_at: float,
+        agent: str | None = None,
+        task_status: str | None = None,
+        **details,
+    ) -> None:
+        self.event_service.save(
+            task_id,
+            "workflow_progress",
+            {
+                "schema_version": "workflow-progress/v1",
+                "task_id": task_id,
+                "run_id": run_id,
+                "phase": phase,
+                "status": status,
+                "task_status": task_status,
+                "agent": agent,
+                "step": step,
+                "elapsed_ms": int((time.monotonic() - started_at) * 1_000),
+                **details,
+            },
+        )
 
     @staticmethod
     def _phase_agent_name(current_status: str) -> str | None:

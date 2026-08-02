@@ -40,6 +40,18 @@ def test_failure_classifier_selects_specific_recovery_strategies(db):
     assert context.classification == FailureClassification.MISSING_CONTEXT
 
 
+def test_failure_classifier_treats_jest_sigkill_as_environment_failure(db):
+    report = RecoveryService(db).classify(
+        {
+            "type": "VerificationFailure",
+            "message": "Jest exited with code 137 after a worker received SIGKILL.",
+            "details": {"tool": "jest", "exit_code": 137},
+        }
+    )
+
+    assert report.classification == FailureClassification.ENVIRONMENT
+
+
 @pytest.mark.parametrize(
     ("tool", "output", "expected"),
     [

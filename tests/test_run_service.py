@@ -287,6 +287,32 @@ def test_local_workflow_does_not_reopen_completed_run_on_analytics_failure(
     assert RunService(db).list_steps(run.id)[0].status == "COMPLETED"
 
 
+def test_late_executor_failure_does_not_overwrite_newer_resumed_phase(
+    db, monkeypatch
+):
+    run = _create_run(db)
+
+    class StaleFailingOrchestrator:
+        def __init__(self, _db):
+            self.db = _db
+
+        def run_task(self, task_id, **kwargs):
+            service = RunService(self.db)
+            service.transition(run.id, "FAILED", "ManualFailure")
+            service.resume(run.id)
+            raise RuntimeError("late executor failure")
+
+    monkeypatch.setattr(
+        "sacm.core.local_workflow.Orchestrator", StaleFailingOrchestrator
+    )
+
+    result = LocalWorkflow(db).execute(run.id)
+
+    assert result["status"] == "PLANNING"
+    assert result["stale_result_ignored"] is True
+    assert RunService(db).get(run.id).status == "PLANNING"
+
+
 def test_external_framework_failure_schedules_typed_recovery(db):
     run = _create_run(db)
     service = ExternalAgentService(db)

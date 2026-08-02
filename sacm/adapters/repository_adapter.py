@@ -101,6 +101,7 @@ class RepositoryAdapter:
                 worktree_path.is_dir()
                 and self._worktree_branch(worktree_path) == branch_name
             ):
+                self._reuse_node_modules(worktree_path)
                 return str(worktree_path)
             raise RepositoryOperationError(
                 f"Worktree path {worktree_path} already exists but is not attached "
@@ -133,9 +134,25 @@ class RepositoryAdapter:
                 worktree_path.is_dir()
                 and self._worktree_branch(worktree_path) == branch_name
             ):
+                self._reuse_node_modules(worktree_path)
                 return str(worktree_path)
             raise
+        self._reuse_node_modules(worktree_path)
         return str(worktree_path)
+
+    def _reuse_node_modules(self, worktree_path: Path) -> None:
+        source = self.repo_path / "node_modules"
+        target = worktree_path / "node_modules"
+        if not source.exists() or not source.is_dir():
+            return
+        if target.exists() or target.is_symlink():
+            return
+        try:
+            target.symlink_to(source.resolve(), target_is_directory=True)
+        except OSError as exc:
+            raise RepositoryOperationError(
+                f"Cannot reuse repository dependencies in {worktree_path}: {exc}"
+            ) from exc
 
     def _worktree_branch(self, worktree_path: Path) -> str | None:
         result = self._git(

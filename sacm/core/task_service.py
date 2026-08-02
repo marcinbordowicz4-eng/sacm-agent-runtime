@@ -29,12 +29,55 @@ class TaskService:
     def get(self, task_id: str) -> Task | None:
         return self.db.query(Task).filter(Task.id == task_id).first()
 
-    def mark_done(self, task_id: str) -> None:
-        self.update_status(task_id, "done")
+    def is_current(
+        self,
+        task_id: str,
+        *,
+        expected_status: str,
+        expected_updated_at: datetime,
+    ) -> bool:
+        return (
+            self.db.query(Task.id)
+            .filter(
+                Task.id == task_id,
+                Task.status == expected_status,
+                Task.updated_at == expected_updated_at,
+            )
+            .first()
+            is not None
+        )
 
-    def update_status(self, task_id: str, status: str) -> None:
-        task = self.get(task_id)
-        if task:
-            task.status = status
-            task.updated_at = datetime.utcnow()
-            self.db.commit()
+    def mark_done(
+        self,
+        task_id: str,
+        *,
+        expected_status: str | None = None,
+        expected_updated_at: datetime | None = None,
+    ) -> bool:
+        return self.update_status(
+            task_id,
+            "done",
+            expected_status=expected_status,
+            expected_updated_at=expected_updated_at,
+        )
+
+    def update_status(
+        self,
+        task_id: str,
+        status: str,
+        *,
+        expected_status: str | None = None,
+        expected_updated_at: datetime | None = None,
+    ) -> bool:
+        query = self.db.query(Task).filter(Task.id == task_id)
+        if expected_status is not None:
+            query = query.filter(Task.status == expected_status)
+        if expected_updated_at is not None:
+            query = query.filter(Task.updated_at == expected_updated_at)
+        updated = query.update(
+            {Task.status: status, Task.updated_at: datetime.utcnow()},
+            synchronize_session=False,
+        )
+        self.db.commit()
+        self.db.expire_all()
+        return bool(updated)

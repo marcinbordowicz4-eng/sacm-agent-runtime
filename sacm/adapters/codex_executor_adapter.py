@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from sacm.adapters.repository_adapter import RepositoryAdapter
+from sacm.core.verification_execution import (
+    resource_failure_reason,
+    sequential_retry_command,
+)
 
 
 class CodexExecutorAdapter:
@@ -31,15 +35,7 @@ class CodexExecutorAdapter:
         )
         dependency_bin = self.repository.repo_path / "node_modules" / ".bin"
         verification = [
-            {
-                "command": command,
-                **self._run(
-                    shlex.split(command),
-                    worktree_path,
-                    600,
-                    path_prefix=dependency_bin,
-                ),
-            }
+            self._run_verification(command, worktree_path, dependency_bin)
             for command in verification_commands
             if command
         ]
@@ -51,6 +47,61 @@ class CodexExecutorAdapter:
             "verification": verification,
             "usage": usage,
             "diff": RepositoryAdapter(worktree_path).get_diff(),
+        }
+
+    def _run_verification(
+        self,
+        command: str,
+        worktree_path: str,
+        dependency_bin: Path,
+    ) -> dict[str, Any]:
+        original = self._run(
+            shlex.split(command),
+            worktree_path,
+            600,
+            path_prefix=dependency_bin,
+        )
+        reason = resource_failure_reason(original)
+        retry_command = sequential_retry_command(command) if reason else None
+        if not retry_command:
+            return {
+                "command": command,
+                **original,
+                **(
+                    {
+                        "failure_classification": "ENVIRONMENT",
+                        "failure_reason": "INFRASTRUCTURE_RESOURCE",
+                    }
+                    if reason
+                    else {}
+                ),
+            }
+
+        retry = self._run(
+            shlex.split(retry_command),
+            worktree_path,
+            600,
+            path_prefix=dependency_bin,
+        )
+        retry_resource_reason = resource_failure_reason(retry)
+        return {
+            "command": retry_command,
+            **retry,
+            **(
+                {
+                    "failure_classification": "ENVIRONMENT",
+                    "failure_reason": "INFRASTRUCTURE_RESOURCE",
+                }
+                if retry_resource_reason
+                else {}
+            ),
+            "retry_evidence": {
+                "reason": reason,
+                "classification": "ENVIRONMENT",
+                "category": "INFRASTRUCTURE_RESOURCE",
+                "original": {"command": command, **original},
+                "retry": {"command": retry_command, **retry},
+            },
         }
 
     @staticmethod

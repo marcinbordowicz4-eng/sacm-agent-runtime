@@ -52,7 +52,9 @@ _JEST_PATTERN = re.compile(r"^\s*FAIL\s+(?P<test>\S+)", re.MULTILINE)
 _ENVIRONMENT_PATTERN = re.compile(
     r"(permission denied|disk full|no space left|out of memory|connection refused|"
     r"network is unreachable|temporary failure|timed out|timeout|"
-    r"could not resolve host|docker daemon|resource temporarily unavailable)",
+    r"could not resolve host|docker daemon|resource temporarily unavailable|"
+    r"sigkill|exit(?:ed)?(?: with)?(?: code)? 137|oom(?:[-_ ]?kill(?:ed|er)?)?|"
+    r"worker (?:was )?(?:killed|terminated))",
     re.IGNORECASE,
 )
 _API_PATTERN = re.compile(
