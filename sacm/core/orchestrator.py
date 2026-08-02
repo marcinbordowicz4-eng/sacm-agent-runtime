@@ -322,7 +322,10 @@ class Orchestrator:
                 break
 
             if result.next_state_hint:
-                self.task_service.update_status(task_id, result.next_state_hint)
+                self.task_service.update_status(
+                    task_id,
+                    self._unverified_next_state(result.next_state_hint),
+                )
 
         final_task = self.task_service.get(task_id)
         if not final_task:
@@ -347,9 +350,14 @@ class Orchestrator:
     @staticmethod
     def _phase_agent_name(current_status: str) -> str | None:
         return {
+            "coding": "CodexExecutor",
             "testing": "CloudExecutor",
             "reviewing": "Reviewer",
         }.get(current_status)
+
+    @staticmethod
+    def _unverified_next_state(next_state_hint: str) -> str:
+        return "testing" if next_state_hint == "done" else next_state_hint
 
     @staticmethod
     def _should_initialize_planning(current_status: str) -> bool:
