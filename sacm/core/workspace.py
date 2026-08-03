@@ -66,12 +66,15 @@ class WorkspaceManager:
             dependency_cache = RepositoryAdapter(
                 workspace.repository_path
             ).dependency_cache(workspace.path)
-            if dependency_cache:
+            if dependency_cache and dependency_cache.environment:
+                cache_environment_name, cache_environment_path = next(
+                    iter(dependency_cache.environment.items())
+                )
                 dependency_cache_args = [
                     "--volume",
-                    f"{dependency_cache.cache_path}:/dependency-cache:rw",
+                    f"{cache_environment_path}:/dependency-cache:rw",
                     "--env",
-                    f"{next(iter(dependency_cache.environment))}=/dependency-cache",
+                    f"{cache_environment_name}=/dependency-cache",
                 ]
         docker_command = [
             "docker",

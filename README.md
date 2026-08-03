@@ -638,11 +638,14 @@ merges it. The task cost endpoint
 `GET /tasks/{task_id}/costs` aggregates only provider-reported token usage
 persisted for that task; tool durations are trace metadata, not inferred cost.
 
-Task worktrees never symlink the source repository's writable `node_modules`.
-Package-manager download caches are shared under
-`SACM_DEPENDENCY_CACHE_ROOT` using a package-manager and lockfile hash key, while
-every worktree owns its dependency installation. The same cache is mounted into
-Docker workspaces when a supported lockfile is present.
+Task worktrees never symlink or otherwise use the source repository's writable
+`node_modules`. Package-manager download caches are shared under
+`SACM_DEPENDENCY_CACHE_ROOT`; npm also stores a completed `node_modules`
+snapshot keyed by both `package.json` and its lockfile. SACM serializes cache
+fills and restores only marked-complete snapshots as physical copies into each
+worktree, so cache hits preserve worktree isolation and partial installs are
+never reused. The same download cache is mounted into Docker workspaces when a
+supported lockfile is present.
 
 ## OpenAI Agents SDK
 

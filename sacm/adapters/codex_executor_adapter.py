@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from sacm.adapters.repository_adapter import RepositoryAdapter
+from sacm.adapters.repository_adapter import DependencyCache, RepositoryAdapter
 from sacm.core.verification_execution import (
     resource_failure_reason,
     sequential_retry_command,
@@ -40,19 +40,11 @@ class CodexExecutorAdapter:
         dependency_environment = (
             dependency_cache.environment if dependency_cache else None
         )
-        dependency_setup = None
-        if dependency_cache and not self._dependencies_are_ready(
-            worktree_path, dependency_cache.cache_key
-        ):
-            dependency_setup = self._run_with_telemetry(
-                dependency_cache.install_command,
-                worktree_path,
-                timeout=self._dependency_setup_timeout(),
-                tool="dependency_setup",
-                telemetry_sink=telemetry_sink,
-                environment=dependency_environment,
-            )
-            dependency_setup["command"] = shlex.join(dependency_cache.install_command)
+        dependency_setup, dependency_cache_status = self._prepare_dependencies(
+            worktree_path,
+            dependency_cache,
+            telemetry_sink=telemetry_sink,
+        )
         if (
             dependency_cache is not None
             and dependency_setup
@@ -71,10 +63,11 @@ class CodexExecutorAdapter:
                     "manager": dependency_cache.manager,
                     "cache_key": dependency_cache.cache_key,
                     "prepared": False,
+                    "status": dependency_cache_status,
                 },
                 "dependency_setup": dependency_setup,
             }
-        if dependency_cache and dependency_setup:
+        if dependency_cache and dependency_cache_status in {"installed", "shared"}:
             self._write_dependency_marker(worktree_path, dependency_cache.cache_key)
         command = (
             [
@@ -127,12 +120,97 @@ class CodexExecutorAdapter:
                     "manager": dependency_cache.manager,
                     "cache_key": dependency_cache.cache_key,
                     "prepared": True,
+                    "status": dependency_cache_status,
                 }
                 if dependency_cache
                 else None
             ),
             "dependency_setup": dependency_setup,
         }
+
+    def _prepare_dependencies(
+        self,
+        worktree_path: str,
+        dependency_cache: DependencyCache | None,
+        *,
+        telemetry_sink: Callable[[dict[str, Any]], None] | None,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        if dependency_cache is None:
+            return None, None
+        if self._dependencies_are_ready(worktree_path, dependency_cache.cache_key):
+            self._emit_dependency_cache_telemetry(
+                telemetry_sink, dependency_cache, "worktree"
+            )
+            return None, "worktree"
+        if dependency_cache.manager == "npm":
+            with self.repository.node_dependency_cache_lock(dependency_cache):
+                if self.repository.restore_node_dependencies(
+                    worktree_path, dependency_cache
+                ):
+                    self._emit_dependency_cache_telemetry(
+                        telemetry_sink, dependency_cache, "shared"
+                    )
+                    return None, "shared"
+                self._emit_dependency_cache_telemetry(
+                    telemetry_sink, dependency_cache, "miss"
+                )
+                dependency_setup = self._install_dependencies(
+                    worktree_path, dependency_cache, telemetry_sink
+                )
+                if dependency_setup["returncode"] == 0:
+                    self.repository.publish_node_dependencies(
+                        worktree_path, dependency_cache
+                    )
+                    self._emit_dependency_cache_telemetry(
+                        telemetry_sink, dependency_cache, "published"
+                    )
+                return (
+                    dependency_setup,
+                    "installed"
+                    if dependency_setup["returncode"] == 0
+                    else "failed",
+                )
+        self._emit_dependency_cache_telemetry(telemetry_sink, dependency_cache, "miss")
+        dependency_setup = self._install_dependencies(
+            worktree_path, dependency_cache, telemetry_sink
+        )
+        return (
+            dependency_setup,
+            "installed" if dependency_setup["returncode"] == 0 else "failed",
+        )
+
+    def _install_dependencies(
+        self,
+        worktree_path: str,
+        dependency_cache: DependencyCache,
+        telemetry_sink: Callable[[dict[str, Any]], None] | None,
+    ) -> dict[str, Any]:
+        dependency_setup = self._run_with_telemetry(
+            dependency_cache.install_command,
+            worktree_path,
+            timeout=self._dependency_setup_timeout(),
+            tool="dependency_setup",
+            telemetry_sink=telemetry_sink,
+            environment=dependency_cache.environment,
+        )
+        dependency_setup["command"] = shlex.join(dependency_cache.install_command)
+        return dependency_setup
+
+    def _emit_dependency_cache_telemetry(
+        self,
+        telemetry_sink: Callable[[dict[str, Any]], None] | None,
+        dependency_cache: DependencyCache,
+        status: str,
+    ) -> None:
+        self._emit(
+            telemetry_sink,
+            {
+                "type": "dependency_cache",
+                "manager": dependency_cache.manager,
+                "cache_key": dependency_cache.cache_key,
+                "status": status,
+            },
+        )
 
     @classmethod
     def _dependencies_are_ready(cls, worktree_path: str, cache_key: str) -> bool:
@@ -378,10 +456,19 @@ class CodexExecutorAdapter:
         streams = selectors.DefaultSelector()
         assert process.stdout is not None
         assert process.stderr is not None
-        streams.register(process.stdout, selectors.EVENT_READ, stdout_chunks)
-        streams.register(process.stderr, selectors.EVENT_READ, stderr_chunks)
+        streams.register(
+            process.stdout,
+            selectors.EVENT_READ,
+            {"chunks": stdout_chunks, "pending": ""},
+        )
+        streams.register(
+            process.stderr,
+            selectors.EVENT_READ,
+            {"chunks": stderr_chunks, "pending": ""},
+        )
         deadline = started_at + timeout
         timed_out = False
+        process_exited_at: float | None = None
         while streams.get_map():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -390,20 +477,34 @@ class CodexExecutorAdapter:
                     os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-                remaining = 1.0
-            for key, _ in streams.select(remaining):
-                line = key.fileobj.readline()
-                if not line:
+                remaining = 0.1
+            if process.poll() is not None:
+                process_exited_at = process_exited_at or time.monotonic()
+                if time.monotonic() - process_exited_at >= 1.0:
+                    break
+            for key, _ in streams.select(min(remaining, 0.1)):
+                chunk = os.read(key.fileobj.fileno(), 4_096)
+                if not chunk:
                     streams.unregister(key.fileobj)
                     continue
-                key.data.append(line)
-                if key.data is stdout_chunks:
-                    try:
-                        event = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if isinstance(event, dict):
-                        on_json_event(event)
+                text = chunk.decode("utf-8", errors="replace")
+                key.data["chunks"].append(text)
+                if key.data["chunks"] is stdout_chunks:
+                    key.data["pending"] += text
+                    lines = key.data["pending"].splitlines(keepends=True)
+                    key.data["pending"] = ""
+                    if lines and not lines[-1].endswith(("\n", "\r")):
+                        key.data["pending"] = lines.pop()
+                    for line in lines:
+                        try:
+                            event = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(event, dict):
+                            on_json_event(event)
+        for key in list(streams.get_map().values()):
+            streams.unregister(key.fileobj)
+            key.fileobj.close()
         process.wait()
         full_stdout = "".join(stdout_chunks)
         stderr = "".join(stderr_chunks)

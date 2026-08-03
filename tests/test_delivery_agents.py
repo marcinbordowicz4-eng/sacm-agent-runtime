@@ -9,6 +9,7 @@ import pytest
 from sacm.adapters.codex_executor_adapter import CodexExecutorAdapter
 from sacm.adapters.github_adapter import GitHubAdapter
 from sacm.adapters.openai_agents_adapter import OpenAIAgentsAdapter
+from sacm.adapters.repository_adapter import DependencyCache
 from sacm.agents.codex_executor import CodexExecutorAgent
 from sacm.agents.eas_workflow import EASWorkflowAgent
 from sacm.agents.mobile_e2e import MobileE2EAgent
@@ -85,12 +86,14 @@ def test_codex_executor_prepares_independent_dependencies(monkeypatch, tmp_path)
     worktree.mkdir()
     (worktree / "node_modules").mkdir()
     calls = []
-    cache = SimpleNamespace(
+    cache = DependencyCache(
         manager="npm",
         cache_key="npm-key",
+        cache_path=tmp_path / "cache",
         environment={"npm_config_cache": "/safe/npm-cache"},
         install_command=["npm", "ci", "--prefer-offline"],
     )
+    cache.cache_path.mkdir()
     monkeypatch.setattr(adapter.repository, "create_worktree", lambda branch: str(worktree))
     monkeypatch.setattr(adapter.repository, "dependency_cache", lambda path: cache)
     monkeypatch.setattr(
@@ -125,12 +128,14 @@ def test_codex_executor_reuses_dependencies_only_with_matching_marker(
     worktree = tmp_path / "worktree"
     (worktree / "node_modules").mkdir(parents=True)
     (worktree / ".sacm-dependency-cache-key").write_text("npm-key\n")
-    cache = SimpleNamespace(
+    cache = DependencyCache(
         manager="npm",
         cache_key="npm-key",
+        cache_path=tmp_path / "cache",
         environment={"npm_config_cache": "/safe/npm-cache"},
         install_command=["npm", "ci", "--prefer-offline"],
     )
+    cache.cache_path.mkdir()
     calls = []
     monkeypatch.setattr(adapter.repository, "create_worktree", lambda branch: str(worktree))
     monkeypatch.setattr(adapter.repository, "dependency_cache", lambda path: cache)
@@ -155,6 +160,54 @@ def test_codex_executor_reuses_dependencies_only_with_matching_marker(
 
     assert calls[0][0:2] == ["codex", "exec"]
     assert result["dependency_setup"] is None
+
+
+def test_codex_executor_restores_complete_shared_node_cache(monkeypatch, tmp_path):
+    adapter = CodexExecutorAdapter(str(tmp_path))
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    source = tmp_path / "source"
+    (source / "node_modules" / "example").mkdir(parents=True)
+    (source / "node_modules" / "example" / "index.js").write_text("cached")
+    cache = DependencyCache(
+        manager="npm",
+        cache_key="npm-key",
+        cache_path=tmp_path / "cache",
+        environment={"npm_config_cache": "/safe/npm-cache"},
+        install_command=["npm", "ci", "--prefer-offline"],
+    )
+    cache.cache_path.mkdir()
+    with adapter.repository.node_dependency_cache_lock(cache):
+        adapter.repository.publish_node_dependencies(source, cache)
+    calls = []
+    telemetry = []
+    monkeypatch.setattr(adapter.repository, "create_worktree", lambda branch: str(worktree))
+    monkeypatch.setattr(adapter.repository, "dependency_cache", lambda path: cache)
+    monkeypatch.setattr(
+        "sacm.adapters.codex_executor_adapter.RepositoryAdapter.get_diff",
+        lambda self: "",
+    )
+
+    def fake_run(command, cwd, timeout, **kwargs):
+        calls.append(command)
+        return {
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+            "events": [],
+            "duration_ms": 1,
+        }
+
+    monkeypatch.setattr(adapter, "_run", fake_run)
+
+    result = adapter.execute("task-1", "implement", [], telemetry_sink=telemetry.append)
+
+    assert calls == [["codex", "exec", "--full-auto", "--json", "implement"]]
+    assert (worktree / "node_modules" / "example" / "index.js").read_text() == "cached"
+    assert result["dependency_cache"]["status"] == "shared"
+    assert result["dependency_setup"] is None
+    assert telemetry[0]["type"] == "dependency_cache"
+    assert telemetry[0]["status"] == "shared"
 
 
 def test_codex_executor_preserves_configurable_copilot_execution(
@@ -334,6 +387,29 @@ def test_codex_json_usage_is_emitted_before_executor_process_returns(tmp_path):
 
     assert callback_times[0][0]["usage"]["input_tokens"] == 3
     assert callback_times[0][1] < returned_at
+
+
+def test_codex_executor_does_not_wait_for_detached_child_pipe(tmp_path):
+    started_at = time.monotonic()
+
+    result = CodexExecutorAdapter._run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os, sys, time; "
+                "child = os.fork(); "
+                "child and sys.exit(0); "
+                "time.sleep(2)"
+            ),
+        ],
+        str(tmp_path),
+        5,
+        on_json_event=lambda _: None,
+    )
+
+    assert result["returncode"] == 0
+    assert time.monotonic() - started_at < 1.8
 
 
 def test_codex_executor_agent_requires_target_repository():

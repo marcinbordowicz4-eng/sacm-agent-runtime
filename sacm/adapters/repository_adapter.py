@@ -1,12 +1,17 @@
+import fcntl
 import fnmatch
 import hashlib
 import os
 import re
 import shlex
+import shutil
 import stat
 import subprocess
+import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator
 
 
 @dataclass(frozen=True)
@@ -16,6 +21,15 @@ class DependencyCache:
     cache_path: Path
     environment: dict[str, str]
     install_command: list[str]
+
+    @property
+    def node_modules_path(self) -> Path:
+        """The immutable-ready dependency snapshot for Node worktrees."""
+        return self.cache_path / "node_modules"
+
+    @property
+    def ready_marker_path(self) -> Path:
+        return self.cache_path / ".sacm-node-modules-ready"
 
 
 @dataclass(frozen=True)
@@ -179,6 +193,11 @@ class RepositoryAdapter:
         digest = hashlib.sha256()
         digest.update(f"{manager}\0{path.name}\0".encode())
         digest.update(path.read_bytes())
+        if manager in {"npm", "pnpm", "yarn", "bun"}:
+            package_manifest = worktree / "package.json"
+            if package_manifest.is_file():
+                digest.update(b"\0package.json\0")
+                digest.update(package_manifest.read_bytes())
         cache_key = f"{manager}-{digest.hexdigest()[:24]}"
         configured_root = os.getenv("SACM_DEPENDENCY_CACHE_ROOT")
         if configured_root:
@@ -193,6 +212,10 @@ class RepositoryAdapter:
                     / f".{self.repo_path.name}-sacm-dependency-cache"
                 ).resolve()
             )
+        if self._cache_root_is_in_git_worktree(root, worktree):
+            raise RepositoryPathError(
+                "Dependency cache root must be outside the isolated Git worktree."
+            )
         cache_path = root / manager / cache_key
         try:
             cache_path.mkdir(parents=True, exist_ok=True)
@@ -205,8 +228,16 @@ class RepositoryAdapter:
             raise RepositoryOperationError(
                 "Dependency cache path must remain inside SACM_DEPENDENCY_CACHE_ROOT."
             )
+        npm_download_cache = resolved_cache / "downloads"
+        if manager == "npm":
+            try:
+                npm_download_cache.mkdir(exist_ok=True)
+            except OSError as exc:
+                raise RepositoryOperationError(
+                    f"Cannot prepare npm download cache {npm_download_cache}: {exc}"
+                ) from exc
         environment = {
-            "npm": {"npm_config_cache": str(resolved_cache)},
+            "npm": {"npm_config_cache": str(npm_download_cache)},
             "pnpm": {"pnpm_config_store_dir": str(resolved_cache)},
             "yarn": {"YARN_CACHE_FOLDER": str(resolved_cache)},
             "bun": {"BUN_INSTALL_CACHE_DIR": str(resolved_cache)},
@@ -246,6 +277,117 @@ class RepositoryAdapter:
             install_command=install_command,
         )
 
+    @contextmanager
+    def node_dependency_cache_lock(
+        self, dependency_cache: DependencyCache
+    ) -> Iterator[None]:
+        """Serialize cache fills so only complete Node snapshots become visible."""
+        if dependency_cache.manager != "npm":
+            yield
+            return
+        lock_path = dependency_cache.cache_path.parent / (
+            f".{dependency_cache.cache_key}.lock"
+        )
+        try:
+            descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        except OSError as exc:
+            raise RepositoryOperationError(
+                f"Cannot lock dependency cache {lock_path}: {exc}"
+            ) from exc
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
+
+    @staticmethod
+    def node_dependency_cache_ready(dependency_cache: DependencyCache) -> bool:
+        if dependency_cache.manager != "npm":
+            return False
+        try:
+            return (
+                dependency_cache.node_modules_path.is_dir()
+                and not dependency_cache.node_modules_path.is_symlink()
+                and dependency_cache.ready_marker_path.is_file()
+                and dependency_cache.ready_marker_path.read_text(
+                    encoding="utf-8"
+                ).strip()
+                == dependency_cache.cache_key
+            )
+        except OSError:
+            return False
+
+    def restore_node_dependencies(
+        self, worktree_path: str | Path, dependency_cache: DependencyCache
+    ) -> bool:
+        """Copy a complete cache snapshot into an isolated worktree."""
+        if not self.node_dependency_cache_ready(dependency_cache):
+            return False
+        worktree = Path(worktree_path).resolve()
+        target = worktree / "node_modules"
+        temporary_target = worktree / f".sacm-node-modules-{uuid.uuid4().hex}"
+        try:
+            shutil.copytree(
+                dependency_cache.node_modules_path,
+                temporary_target,
+                symlinks=True,
+            )
+            self._remove_node_modules(target)
+            temporary_target.replace(target)
+            return True
+        except OSError as exc:
+            raise RepositoryOperationError(
+                f"Cannot restore cached Node dependencies into {worktree}: {exc}"
+            ) from exc
+        finally:
+            if temporary_target.exists() or temporary_target.is_symlink():
+                self._remove_node_modules(temporary_target)
+
+    def publish_node_dependencies(
+        self, worktree_path: str | Path, dependency_cache: DependencyCache
+    ) -> None:
+        """Atomically publish a successful worktree install for later reuse."""
+        worktree = Path(worktree_path).resolve()
+        source = worktree / "node_modules"
+        if not source.is_dir() or source.is_symlink():
+            raise RepositoryOperationError(
+                "Cannot publish Node dependencies: npm did not create a regular "
+                "node_modules directory."
+            )
+        temporary_snapshot = dependency_cache.cache_path / (
+            f".node_modules-{uuid.uuid4().hex}"
+        )
+        try:
+            dependency_cache.ready_marker_path.unlink(missing_ok=True)
+            shutil.copytree(source, temporary_snapshot, symlinks=True)
+            self._remove_node_modules(dependency_cache.node_modules_path)
+            temporary_snapshot.replace(dependency_cache.node_modules_path)
+            temporary_marker = dependency_cache.ready_marker_path.with_suffix(
+                ".tmp"
+            )
+            temporary_marker.write_text(
+                f"{dependency_cache.cache_key}\n", encoding="utf-8"
+            )
+            temporary_marker.replace(dependency_cache.ready_marker_path)
+        except OSError as exc:
+            raise RepositoryOperationError(
+                f"Cannot publish Node dependency cache {dependency_cache.cache_path}: "
+                f"{exc}"
+            ) from exc
+        finally:
+            if temporary_snapshot.exists() or temporary_snapshot.is_symlink():
+                self._remove_node_modules(temporary_snapshot)
+
+    @staticmethod
+    def _remove_node_modules(path: Path) -> None:
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+
     @staticmethod
     def _dependency_manifest(worktree_path: Path) -> tuple[str, Path] | None:
         candidates = (
@@ -269,6 +411,18 @@ class RepositoryAdapter:
             if path.is_file():
                 return manager, path
         return None
+
+    def _cache_root_is_in_git_worktree(self, root: Path, worktree: Path) -> bool:
+        if root == worktree or worktree in root.parents:
+            return True
+        result = self._git(["worktree", "list", "--porcelain"], check=False)
+        for line in result.stdout.splitlines():
+            if not line.startswith("worktree "):
+                continue
+            known_worktree = Path(line.removeprefix("worktree ")).resolve()
+            if root == known_worktree or known_worktree in root.parents:
+                return True
+        return False
 
     def _worktree_branch(self, worktree_path: Path) -> str | None:
         result = self._git(

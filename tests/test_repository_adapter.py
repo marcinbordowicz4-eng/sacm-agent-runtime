@@ -212,7 +212,9 @@ def test_dependency_cache_is_reused_with_independent_worktree_dependencies(
     assert second_cache is not None
     assert first_cache.cache_key == second_cache.cache_key
     assert first_cache.cache_path == second_cache.cache_path
-    assert first_cache.environment["npm_config_cache"] == str(first_cache.cache_path)
+    assert first_cache.environment["npm_config_cache"] == str(
+        first_cache.cache_path / "downloads"
+    )
     assert first_cache.install_command == [
         "npm",
         "ci",
@@ -242,6 +244,85 @@ def test_dependency_cache_lockfile_change_invalidates_key(tmp_path, monkeypatch)
     assert second is not None
     assert first.cache_key != second.cache_key
     assert first.cache_path != second.cache_path
+
+
+def test_node_cache_key_includes_package_manifest(tmp_path, monkeypatch):
+    repository = tmp_path / "repository"
+    worktree = tmp_path / "worktree"
+    repository.mkdir()
+    worktree.mkdir()
+    (worktree / "package-lock.json").write_text('{"lockfileVersion": 3}')
+    package = worktree / "package.json"
+    package.write_text('{"dependencies":{"one":"1.0.0"}}')
+    monkeypatch.setenv("SACM_DEPENDENCY_CACHE_ROOT", str(tmp_path / "cache"))
+    adapter = RepositoryAdapter(str(repository))
+
+    first = adapter.dependency_cache(worktree)
+    package.write_text('{"dependencies":{"two":"1.0.0"}}')
+    second = adapter.dependency_cache(worktree)
+
+    assert first is not None
+    assert second is not None
+    assert first.cache_key != second.cache_key
+
+
+def test_node_dependency_snapshot_is_ready_only_after_publish_and_isolated(
+    tmp_path, monkeypatch
+):
+    repository = tmp_path / "repository"
+    worktree = tmp_path / "worktree"
+    restored = tmp_path / "restored"
+    repository.mkdir()
+    worktree.mkdir()
+    restored.mkdir()
+    (worktree / "package-lock.json").write_text('{"lockfileVersion": 3}')
+    (worktree / "package.json").write_text('{"name":"example"}')
+    node_modules = worktree / "node_modules"
+    (node_modules / "example").mkdir(parents=True)
+    (node_modules / "example" / "index.js").write_text("module.exports = 1")
+    monkeypatch.setenv("SACM_DEPENDENCY_CACHE_ROOT", str(tmp_path / "cache"))
+    adapter = RepositoryAdapter(str(repository))
+    cache = adapter.dependency_cache(worktree)
+
+    assert cache is not None
+    cache.node_modules_path.mkdir()
+    assert not adapter.restore_node_dependencies(restored, cache)
+
+    with adapter.node_dependency_cache_lock(cache):
+        adapter.publish_node_dependencies(worktree, cache)
+
+    assert adapter.node_dependency_cache_ready(cache)
+    assert adapter.restore_node_dependencies(restored, cache)
+    assert not (restored / "node_modules").is_symlink()
+    (restored / "node_modules" / "example" / "index.js").write_text("changed")
+    assert (cache.node_modules_path / "example" / "index.js").read_text() == (
+        "module.exports = 1"
+    )
+
+
+def test_dependency_cache_root_cannot_be_in_worktree(tmp_path, monkeypatch):
+    repository = tmp_path / "repository"
+    worktree = tmp_path / "worktree"
+    repository.mkdir()
+    worktree.mkdir()
+    (worktree / "package-lock.json").write_text('{"lockfileVersion": 3}')
+    monkeypatch.setenv("SACM_DEPENDENCY_CACHE_ROOT", str(worktree / ".cache"))
+
+    with pytest.raises(RepositoryPathError, match="outside the isolated Git worktree"):
+        RepositoryAdapter(str(repository)).dependency_cache(worktree)
+
+
+def test_dependency_cache_root_cannot_be_in_source_git_worktree(
+    tmp_path, monkeypatch
+):
+    repository = _git_repository(tmp_path / "repository")
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / "package-lock.json").write_text('{"lockfileVersion": 3}')
+    monkeypatch.setenv("SACM_DEPENDENCY_CACHE_ROOT", str(repository / ".cache"))
+
+    with pytest.raises(RepositoryPathError, match="outside the isolated Git worktree"):
+        RepositoryAdapter(str(repository)).dependency_cache(worktree)
 
 
 @pytest.mark.parametrize(

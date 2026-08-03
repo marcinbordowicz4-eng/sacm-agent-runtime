@@ -791,5 +791,9 @@ def test_workspace_mounts_lockfile_keyed_package_cache(monkeypatch, tmp_path):
         if value == "--volume"
     ]
     environment = command["args"][command["args"].index("--env") + 1]
-    assert any(volume.endswith(":/dependency-cache:rw") for volume in volumes)
+    cache_volume = next(
+        volume for volume in volumes if volume.endswith(":/dependency-cache:rw")
+    )
+    assert cache_volume.startswith(str(tmp_path / "dependency-cache" / "npm"))
+    assert cache_volume.endswith("/downloads:/dependency-cache:rw")
     assert environment == "npm_config_cache=/dependency-cache"
