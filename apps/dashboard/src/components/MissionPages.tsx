@@ -185,6 +185,7 @@ export function MissionsPage(props: DashboardProps) {
   const taskSource = context?.task.connector_type || 'Not recorded'
   const activeStep = steps.find((step) => ['RUNNING', 'IN_PROGRESS'].includes(step.status))
   const telemetry = props.lifecycleMetrics?.telemetry
+  const providerUsageAvailable = Boolean(telemetry?.usage.length)
   const inputTokens = analytics?.input_tokens ?? telemetry?.input_tokens
   const outputTokens = analytics?.output_tokens ?? telemetry?.output_tokens
   const estimatedCost = analytics?.estimated_cost_usd ?? (
@@ -249,7 +250,7 @@ export function MissionsPage(props: DashboardProps) {
     </section>
     <article className="surface">
       <div className="section-head"><div><p className="eyebrow">RECORDED TELEMETRY</p><h2>Usage and execution metrics</h2></div><span className="count-pill">{telemetry?.usage.length || 0}</span></div>
-      {telemetry ? <dl className="metadata"><Meta label="Input tokens" value={metric(telemetry.input_tokens)} /><Meta label="Output tokens" value={metric(telemetry.output_tokens)} /><Meta label="Estimated cost" value={telemetry.cost_estimation_available ? money(telemetry.estimated_cost_usd) : 'Not recorded'} /><Meta label="Tool executions" value={metric(telemetry.tool_execution_count)} /><Meta label="Tool duration" value={`${metric(telemetry.tool_duration_ms)} ms`} /><Meta label="Failed tools" value={metric(telemetry.failed_tool_execution_count)} /></dl> : <MissingData text="No durable usage or execution telemetry is available for this mission." />}
+      {telemetry ? <>{!providerUsageAvailable && <p className="data-notice"><b>PROVIDER USAGE UNAVAILABLE</b> This executor did not emit token or cost events. SACM reports N/A rather than inferring zero usage.</p>}<dl className="metadata"><Meta label="Input tokens" value={providerUsageAvailable ? metric(telemetry.input_tokens) : 'N/A'} /><Meta label="Output tokens" value={providerUsageAvailable ? metric(telemetry.output_tokens) : 'N/A'} /><Meta label="Estimated cost" value={telemetry.cost_estimation_available ? money(telemetry.estimated_cost_usd) : 'N/A'} /><Meta label="Tool executions" value={metric(telemetry.tool_execution_count)} /><Meta label="Tool duration" value={`${metric(telemetry.tool_duration_ms)} ms`} /><Meta label="Failed tools" value={metric(telemetry.failed_tool_execution_count)} /></dl></> : <MissingData text="No durable usage or execution telemetry is available for this mission." />}
     </article>
     <article className="surface timeline-surface">
       <div className="section-head"><div><p className="eyebrow">LIVE CHANGE JOURNEY</p><h2>Event timeline</h2></div><span className="count-pill">{events.length}</span></div>
