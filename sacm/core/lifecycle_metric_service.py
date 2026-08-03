@@ -61,4 +61,15 @@ class LifecycleMetricService:
                 }
                 for metric, count, total, average, maximum in rows
             ],
+            # Agent-result events are durable task telemetry. Summarizing them here
+            # also exposes usage from missions created before lifecycle rows existed.
+            "telemetry": self._agent_telemetry(run_id),
         }
+
+    def _agent_telemetry(self, run_id: str) -> dict[str, Any] | None:
+        from sacm.core.cost_service import CostService
+
+        try:
+            return CostService(self.db).summarize_run(run_id)
+        except ValueError:
+            return None

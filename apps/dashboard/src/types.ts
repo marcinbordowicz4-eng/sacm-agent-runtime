@@ -476,6 +476,29 @@ export type WorkflowProgress = {
   entries: WorkflowProgressEntry[]
 }
 
+export type LifecycleMetrics = {
+  schema_version: 'lifecycle-metrics/v1'
+  run_id: string
+  metrics: {
+    metric: string
+    count: number
+    sum: number
+    average: number
+    maximum: number
+  }[]
+  telemetry?: {
+    task_id: string
+    usage: Record<string, unknown>[]
+    input_tokens: number
+    output_tokens: number
+    estimated_cost_usd: number
+    cost_estimation_available: boolean
+    tool_execution_count: number
+    tool_duration_ms: number
+    failed_tool_execution_count: number
+  } | null
+}
+
 export type DashboardProps = {
   baseUrl: string
   setBaseUrl: Dispatch<SetStateAction<string>>
@@ -505,6 +528,7 @@ export type DashboardProps = {
   supplyChainCompleteness?: SupplyChainCompleteness
   evidenceManifest?: Record<string, unknown>
   evidenceVerification?: EvidenceVerification
+  lifecycleMetrics?: LifecycleMetrics
   progress?: WorkflowProgress
   progressError: string
   error: string

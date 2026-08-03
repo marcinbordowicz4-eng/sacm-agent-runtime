@@ -183,6 +183,12 @@ export function MissionsPage(props: DashboardProps) {
   const plan = context?.execution_plan
   const taskSource = context?.task.connector_type || 'Not recorded'
   const activeStep = steps.find((step) => ['RUNNING', 'IN_PROGRESS'].includes(step.status))
+  const telemetry = props.lifecycleMetrics?.telemetry
+  const inputTokens = analytics?.input_tokens ?? telemetry?.input_tokens
+  const outputTokens = analytics?.output_tokens ?? telemetry?.output_tokens
+  const estimatedCost = analytics?.estimated_cost_usd ?? (
+    telemetry?.cost_estimation_available ? telemetry.estimated_cost_usd : null
+  )
   return <>
     <PageHeader
       eyebrow={`MISSION ${context?.task.external_id || selected.task_id.slice(0, 10)}`}
@@ -199,7 +205,7 @@ export function MissionsPage(props: DashboardProps) {
       <div><span>Source</span><strong>{taskSource}</strong><small>{context?.task.external_url ? <a href={context.task.external_url} target="_blank" rel="noreferrer">{context.task.external_id || 'Open source task'}</a> : context?.task.external_id || 'External ID not recorded'}</small></div>
       <div><span>Application</span><strong>{context?.project?.name || 'Not linked'}</strong><small>{context?.project?.repository_full_name || 'Repository not recorded'}</small></div>
       <div><span>Current step</span><strong>{activeStep?.name || (selected.status === 'COMPLETED' ? 'Completed' : 'Not recorded')}</strong><small>{steps.length} execution steps</small></div>
-      <div><span>Cost</span><strong>{money(analytics?.estimated_cost_usd)}</strong><small>{metric(analytics?.input_tokens)} input tokens</small></div>
+      <div><span>Cost</span><strong>{money(estimatedCost)}</strong><small>{metric(inputTokens)} input · {metric(outputTokens)} output tokens</small></div>
     </section>
     <Journey props={props} />
     <section className="two-column">
@@ -238,6 +244,10 @@ export function MissionsPage(props: DashboardProps) {
         {comparison ? <details><summary>Replay comparison</summary><pre>{json(comparison)}</pre></details> : <p className="quiet">No replay comparison is available.</p>}
       </article>
     </section>
+    <article className="surface">
+      <div className="section-head"><div><p className="eyebrow">RECORDED TELEMETRY</p><h2>Usage and execution metrics</h2></div><span className="count-pill">{telemetry?.usage.length || 0}</span></div>
+      {telemetry ? <dl className="metadata"><Meta label="Input tokens" value={metric(telemetry.input_tokens)} /><Meta label="Output tokens" value={metric(telemetry.output_tokens)} /><Meta label="Estimated cost" value={telemetry.cost_estimation_available ? money(telemetry.estimated_cost_usd) : 'Not recorded'} /><Meta label="Tool executions" value={metric(telemetry.tool_execution_count)} /><Meta label="Tool duration" value={`${metric(telemetry.tool_duration_ms)} ms`} /><Meta label="Failed tools" value={metric(telemetry.failed_tool_execution_count)} /></dl> : <MissingData text="No durable usage or execution telemetry is available for this mission." />}
+    </article>
     <article className="surface timeline-surface">
       <div className="section-head"><div><p className="eyebrow">LIVE CHANGE JOURNEY</p><h2>Event timeline</h2></div><span className="count-pill">{events.length}</span></div>
       {events.length ? <ol className="event-timeline">{events.map((event) => <li key={event.id}><span>{event.sequence}</span><div><b>{event.event_type.replaceAll('_', ' ')}</b><small>{event.actor} · {date(event.occurred_at)}</small></div><details><summary>Payload</summary><pre>{json(event.payload)}</pre></details></li>)}</ol> : <MissingData text="No runtime events were recorded." />}

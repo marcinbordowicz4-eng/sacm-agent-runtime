@@ -2,7 +2,10 @@ from types import SimpleNamespace
 
 from sacm.core.cost_service import CostService
 from sacm.core.event_service import EventService
+from sacm.core.lifecycle_metric_service import LifecycleMetricService
+from sacm.core.run_service import RunService
 from sacm.infrastructure.db.models import Task
+from sacm.schemas.run import RunCreate
 
 
 def test_cost_service_aggregates_provider_reported_usage(db):
@@ -59,3 +62,37 @@ def test_cost_service_ignores_non_usage_artifacts(db):
     assert summary["usage"] == []
     assert summary["estimated_cost_usd"] == 0
     assert summary["tool_execution_count"] == 1
+
+
+def test_lifecycle_summary_derives_telemetry_for_existing_run_events(db):
+    run = RunService(db).create(
+        RunCreate(title="Telemetry run", description="Preserve mission telemetry")
+    )
+    EventService(db).save(
+        run.task_id,
+        "agent_result",
+        {
+            "run_id": run.id,
+            "usage": [
+                {
+                    "provider": "copilot",
+                    "model": "gpt-5",
+                    "input_tokens": 120,
+                    "output_tokens": 30,
+                    "estimated_cost_usd": 0.015,
+                }
+            ],
+            "tool_execution": [
+                {"duration_ms": 80, "returncode": 0},
+                {"duration_ms": 20, "returncode": 1},
+            ],
+        },
+    )
+
+    telemetry = LifecycleMetricService(db).summary(run.id)["telemetry"]
+
+    assert telemetry["input_tokens"] == 120
+    assert telemetry["output_tokens"] == 30
+    assert telemetry["estimated_cost_usd"] == 0.015
+    assert telemetry["tool_execution_count"] == 2
+    assert telemetry["failed_tool_execution_count"] == 1

@@ -12,6 +12,7 @@ import type {
   Event,
   ExecutionJob,
   ExecutorFleetHealth,
+  LifecycleMetrics,
   OperationalHealth,
   ReplayComparison,
   Run,
@@ -50,6 +51,7 @@ function DashboardApp() {
   const [supplyChainCompleteness, setSupplyChainCompleteness] = useState<SupplyChainCompleteness>()
   const [evidenceManifest, setEvidenceManifest] = useState<Record<string, unknown>>()
   const [evidenceVerification, setEvidenceVerification] = useState<EvidenceVerification>()
+  const [lifecycleMetrics, setLifecycleMetrics] = useState<LifecycleMetrics>()
   const [progress, setProgress] = useState<WorkflowProgress>()
   const [progressError, setProgressError] = useState('')
   const [error, setError] = useState('')
@@ -77,7 +79,7 @@ function DashboardApp() {
     setLoading(true)
     setError('')
     try {
-      const [current, nextContext, nextSteps, nextEvents, nextApprovals, nextEvidence, nextAnalytics, nextSnapshots, nextComparison] = await Promise.all([
+      const [current, nextContext, nextSteps, nextEvents, nextApprovals, nextEvidence, nextAnalytics, nextSnapshots, nextComparison, nextLifecycleMetrics] = await Promise.all([
         request<Run>(`/v1/runs/${run.id}`),
         request<RunContext>(`/v1/runs/${run.id}/context`),
         request<Step[]>(`/v1/runs/${run.id}/steps`),
@@ -87,6 +89,7 @@ function DashboardApp() {
         request<RunAnalytics>(`/v1/runs/${run.id}/analytics`),
         request<Snapshot[]>(`/v1/runs/${run.id}/snapshots`),
         optional<ReplayComparison>(`/v1/runs/${run.id}/comparison`),
+        optional<LifecycleMetrics>(`/v1/runs/${run.id}/lifecycle-metrics`),
       ])
       const latestEvidence = [...nextEvidence].sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))[0]
       const organizationId = nextContext.organization?.id
@@ -120,6 +123,7 @@ function DashboardApp() {
       setSupplyChainCompleteness(nextCompleteness)
       setEvidenceManifest(nextManifest)
       setEvidenceVerification(undefined)
+      setLifecycleMetrics(nextLifecycleMetrics)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Unable to load mission')
     } finally {
@@ -247,6 +251,7 @@ function DashboardApp() {
     supplyChainCompleteness={supplyChainCompleteness}
     evidenceManifest={evidenceManifest}
     evidenceVerification={evidenceVerification}
+    lifecycleMetrics={lifecycleMetrics}
     progress={progress}
     progressError={progressError}
     error={error}
