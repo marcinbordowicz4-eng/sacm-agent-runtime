@@ -887,12 +887,16 @@ class OperationalHealthService:
             "signing": signing,
         }
         if persist:
+            persisted_result = {
+                **result,
+                "generated_at": now.isoformat(),
+            }
             self.db.add(
                 OperationalHealthSnapshot(
                     id=str(uuid.uuid4()),
                     organization_id=organization_id,
                     status=status,
-                    checks=result,
+                    checks=persisted_result,
                     queue_depth=queued,
                     oldest_queue_age_seconds=oldest_age,
                     active_executor_count=active,

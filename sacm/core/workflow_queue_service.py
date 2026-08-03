@@ -1,9 +1,11 @@
 import os
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from types import TracebackType
+from typing import Any, Callable, Literal
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from sacm.core.lifecycle_metric_service import LifecycleMetricService
 from sacm.core.local_workflow import LocalWorkflow
@@ -15,9 +17,110 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+class WorkflowLeaseHeartbeatError(RuntimeError):
+    """Raised when a worker can no longer renew its claimed workflow job."""
+
+
+class WorkflowLeaseHeartbeat:
+    def __init__(
+        self,
+        job_id: str,
+        token: str,
+        *,
+        lease_seconds: int,
+        interval_seconds: float,
+        session_factory: Callable[[], Session],
+    ) -> None:
+        if interval_seconds <= 0 or interval_seconds >= lease_seconds:
+            raise ValueError(
+                "Workflow lease heartbeat interval must be positive and shorter "
+                "than the lease duration."
+            )
+        self.job_id = job_id
+        self.token = token
+        self.lease_seconds = lease_seconds
+        self.interval_seconds = interval_seconds
+        self.session_factory = session_factory
+        self._stop = threading.Event()
+        self._failure: BaseException | None = None
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"sacm-workflow-heartbeat-{job_id[:12]}",
+            daemon=False,
+        )
+        self._started = False
+
+    @property
+    def alive(self) -> bool:
+        return self._thread.is_alive()
+
+    def __enter__(self) -> "WorkflowLeaseHeartbeat":
+        self._thread.start()
+        self._started = True
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> Literal[False]:
+        self.stop()
+        if exc is not None:
+            if self._failure is not None:
+                exc.add_note(f"Workflow lease heartbeat also failed: {self._failure}")
+            return False
+        self.check()
+        return False
+
+    def stop(self) -> None:
+        self._stop.set()
+        if not self._started:
+            return
+        self._thread.join(timeout=max(1.0, self.interval_seconds * 2))
+        if self._thread.is_alive():
+            raise WorkflowLeaseHeartbeatError(
+                f"Workflow job {self.job_id} heartbeat thread did not stop cleanly."
+            )
+
+    def check(self) -> None:
+        if self._failure is not None:
+            raise WorkflowLeaseHeartbeatError(
+                f"Workflow job {self.job_id} lease heartbeat failed; "
+                "the blocking result was not applied."
+            ) from self._failure
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.interval_seconds):
+            db: Session | None = None
+            try:
+                db = self.session_factory()
+                WorkflowQueueService(db, lease_seconds=self.lease_seconds).renew(
+                    self.job_id, self.token
+                )
+            except BaseException as exc:
+                self._failure = exc
+                self._stop.set()
+            finally:
+                if db is not None:
+                    try:
+                        db.close()
+                    except BaseException as exc:
+                        if self._failure is None:
+                            self._failure = exc
+                        self._stop.set()
+
+
 class WorkflowQueueService:
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: Session, lease_seconds: int | None = None) -> None:
         self.db = db
+        self.lease_seconds = (
+            lease_seconds
+            if lease_seconds is not None
+            else int(os.getenv("SACM_WORKFLOW_LEASE_SECONDS", "1800"))
+        )
+        if self.lease_seconds <= 0:
+            raise ValueError("Workflow lease duration must be positive.")
 
     def submit(self, run_id: str) -> WorkflowJob:
         run = RunService(self.db).get(run_id)
@@ -89,7 +192,6 @@ class WorkflowQueueService:
         if candidate is None:
             return None
         token = str(uuid.uuid4())
-        lease_seconds = int(os.getenv("SACM_WORKFLOW_LEASE_SECONDS", "1800"))
         updated = (
             self.db.query(WorkflowJob)
             .filter(
@@ -102,7 +204,7 @@ class WorkflowQueueService:
                     WorkflowJob.attempt: WorkflowJob.attempt + 1,
                     WorkflowJob.lease_token: token,
                     WorkflowJob.lease_expires_at: now
-                    + timedelta(seconds=lease_seconds),
+                    + timedelta(seconds=self.lease_seconds),
                     WorkflowJob.started_at: now,
                     WorkflowJob.updated_at: now,
                 },
@@ -131,9 +233,18 @@ class WorkflowQueueService:
             return None
         job, token = claimed
         try:
-            result = LocalWorkflow(self.db).execute(job.run_id)
+            with self.lease_guard(job.id, token):
+                result = LocalWorkflow(self.db).execute(job.run_id)
         except Exception as exc:
-            self.fail(job.id, token, str(exc))
+            try:
+                self.fail(job.id, token, str(exc))
+            except RuntimeError:
+                return {
+                    "job_id": job.id,
+                    "run_id": job.run_id,
+                    "status": "LEASE_LOST",
+                    "error": str(exc),
+                }
             return {
                 "job_id": job.id,
                 "run_id": job.run_id,
@@ -147,6 +258,59 @@ class WorkflowQueueService:
             "status": "COMPLETED",
             "result": result,
         }
+
+    def renew(self, job_id: str, token: str) -> None:
+        now = _utcnow()
+        updated = (
+            self.db.query(WorkflowJob)
+            .filter(
+                WorkflowJob.id == job_id,
+                WorkflowJob.state == "RUNNING",
+                WorkflowJob.lease_token == token,
+                WorkflowJob.lease_expires_at > now,
+            )
+            .update(
+                {
+                    WorkflowJob.lease_expires_at: now
+                    + timedelta(seconds=self.lease_seconds),
+                    WorkflowJob.updated_at: now,
+                },
+                synchronize_session=False,
+            )
+        )
+        if not updated:
+            self.db.rollback()
+            raise RuntimeError("Workflow job lease was lost.")
+        self.db.commit()
+
+    def lease_guard(
+        self,
+        job_id: str,
+        token: str,
+        *,
+        interval_seconds: float | None = None,
+        session_factory: Callable[[], Session] | None = None,
+    ) -> WorkflowLeaseHeartbeat:
+        configured_interval = interval_seconds
+        if configured_interval is None:
+            raw_interval = os.getenv("SACM_WORKFLOW_LEASE_HEARTBEAT_SECONDS")
+            configured_interval = (
+                float(raw_interval)
+                if raw_interval is not None
+                else min(30.0, self.lease_seconds / 3)
+            )
+        factory = session_factory or sessionmaker(
+            bind=self.db.get_bind(),
+            autoflush=False,
+            expire_on_commit=False,
+        )
+        return WorkflowLeaseHeartbeat(
+            job_id,
+            token,
+            lease_seconds=self.lease_seconds,
+            interval_seconds=configured_interval,
+            session_factory=factory,
+        )
 
     def complete(self, job_id: str, token: str) -> None:
         self._finish(job_id, token, state="COMPLETED")

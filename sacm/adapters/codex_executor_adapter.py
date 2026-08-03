@@ -1,11 +1,12 @@
 import json
 import os
 import re
+import selectors
 import shlex
 import subprocess
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from sacm.adapters.repository_adapter import RepositoryAdapter
 from sacm.core.verification_execution import (
@@ -27,6 +28,8 @@ class CodexExecutorAdapter:
         task_id: str,
         prompt: str,
         verification_commands: list[str],
+        *,
+        telemetry_sink: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         executor = os.getenv("SACM_CODE_EXECUTOR", "codex")
         provider = "copilot" if executor == "copilot" else "codex"
@@ -40,10 +43,12 @@ class CodexExecutorAdapter:
         if dependency_cache and not self._dependencies_are_ready(
             worktree_path, dependency_cache.cache_key
         ):
-            dependency_setup = self._run(
+            dependency_setup = self._run_with_telemetry(
                 dependency_cache.install_command,
                 worktree_path,
                 timeout=1_200,
+                tool="dependency_setup",
+                telemetry_sink=telemetry_sink,
                 environment=dependency_environment,
             )
             dependency_setup["command"] = shlex.join(dependency_cache.install_command)
@@ -85,11 +90,14 @@ class CodexExecutorAdapter:
             if executor == "copilot"
             else ["codex", "exec", "--full-auto", "--json", prompt]
         )
-        codex = self._run(
+        codex = self._run_with_telemetry(
             command,
             worktree_path,
             timeout=1_800,
+            tool=executor,
+            telemetry_sink=telemetry_sink,
             environment=dependency_environment,
+            provider=provider,
         )
         dependency_bin = Path(worktree_path) / "node_modules" / ".bin"
         verification = [
@@ -98,6 +106,7 @@ class CodexExecutorAdapter:
                 worktree_path,
                 dependency_bin,
                 environment=dependency_environment,
+                telemetry_sink=telemetry_sink,
             )
             for command in verification_commands
             if command
@@ -156,11 +165,14 @@ class CodexExecutorAdapter:
         dependency_bin: Path,
         *,
         environment: dict[str, str] | None = None,
+        telemetry_sink: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        original = self._run(
+        original = self._run_with_telemetry(
             shlex.split(command),
             worktree_path,
             600,
+            tool="verification",
+            telemetry_sink=telemetry_sink,
             path_prefix=dependency_bin,
             environment=environment,
         )
@@ -180,10 +192,12 @@ class CodexExecutorAdapter:
                 ),
             }
 
-        retry = self._run(
+        retry = self._run_with_telemetry(
             shlex.split(retry_command),
             worktree_path,
             600,
+            tool="verification",
+            telemetry_sink=telemetry_sink,
             path_prefix=dependency_bin,
             environment=environment,
         )
@@ -216,6 +230,58 @@ class CodexExecutorAdapter:
         return f"sacm/{normalized[:48]}"
 
     @staticmethod
+    def _emit(
+        sink: Callable[[dict[str, Any]], None] | None, event: dict[str, Any]
+    ) -> None:
+        if sink is not None:
+            sink(event)
+
+    def _run_with_telemetry(
+        self,
+        command: list[str],
+        cwd: str,
+        timeout: int,
+        *,
+        tool: str,
+        telemetry_sink: Callable[[dict[str, Any]], None] | None,
+        provider: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        command_text = shlex.join(command)
+        self._emit(
+            telemetry_sink,
+            {"type": "tool_started", "tool": tool, "command": command_text},
+        )
+
+        def on_json_event(event: dict[str, Any]) -> None:
+            if provider is None:
+                return
+            for usage in self._usage_from_events([event], provider=provider):
+                self._emit(
+                    telemetry_sink,
+                    {"type": "provider_usage", "usage": usage},
+                )
+
+        result = self._run(
+            command,
+            cwd,
+            timeout,
+            on_json_event=on_json_event if provider else None,
+            **kwargs,
+        )
+        self._emit(
+            telemetry_sink,
+            {
+                "type": "tool_completed",
+                "tool": tool,
+                "command": command_text,
+                "duration_ms": result["duration_ms"],
+                "returncode": result["returncode"],
+            },
+        )
+        return result
+
+    @staticmethod
     def _run(
         command: list[str],
         cwd: str,
@@ -223,6 +289,7 @@ class CodexExecutorAdapter:
         *,
         path_prefix: Path | None = None,
         environment: dict[str, str] | None = None,
+        on_json_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         started_at = time.monotonic()
         env = None
@@ -234,14 +301,50 @@ class CodexExecutorAdapter:
                 env["PATH"] = os.pathsep.join(
                     [str(path_prefix), env.get("PATH", "")]
                 ).rstrip(os.pathsep)
+        if on_json_event is None:
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=Path(cwd),
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    check=False,
+                    env=env,
+                )
+            except FileNotFoundError:
+                return {
+                    "returncode": 127,
+                    "stdout": "",
+                    "stderr": f"Command not found: {command[0]}",
+                    "events": [],
+                    "duration_ms": int((time.monotonic() - started_at) * 1_000),
+                }
+            except subprocess.TimeoutExpired:
+                return {
+                    "returncode": 124,
+                    "stdout": "",
+                    "stderr": f"Command timed out after {timeout} seconds.",
+                    "events": [],
+                    "duration_ms": int((time.monotonic() - started_at) * 1_000),
+                }
+            full_stdout = completed.stdout
+            return {
+                "returncode": completed.returncode,
+                "stdout": full_stdout[-20_000:],
+                "stderr": completed.stderr[-8_000:],
+                "events": CodexExecutorAdapter._json_events(full_stdout),
+                "duration_ms": int((time.monotonic() - started_at) * 1_000),
+            }
+
         try:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 command,
                 cwd=Path(cwd),
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout,
-                check=False,
+                bufsize=1,
                 env=env,
             )
         except FileNotFoundError:
@@ -252,21 +355,52 @@ class CodexExecutorAdapter:
                 "events": [],
                 "duration_ms": int((time.monotonic() - started_at) * 1_000),
             }
-        except subprocess.TimeoutExpired:
+
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+        streams = selectors.DefaultSelector()
+        assert process.stdout is not None
+        assert process.stderr is not None
+        streams.register(process.stdout, selectors.EVENT_READ, stdout_chunks)
+        streams.register(process.stderr, selectors.EVENT_READ, stderr_chunks)
+        deadline = started_at + timeout
+        timed_out = False
+        while streams.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                process.kill()
+                remaining = 1.0
+            for key, _ in streams.select(remaining):
+                line = key.fileobj.readline()
+                if not line:
+                    streams.unregister(key.fileobj)
+                    continue
+                key.data.append(line)
+                if key.data is stdout_chunks:
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(event, dict):
+                        on_json_event(event)
+        process.wait()
+        full_stdout = "".join(stdout_chunks)
+        stderr = "".join(stderr_chunks)
+        if timed_out:
             return {
                 "returncode": 124,
-                "stdout": "",
-                "stderr": f"Command timed out after {timeout} seconds.",
-                "events": [],
+                "stdout": full_stdout[-20_000:],
+                "stderr": (stderr or f"Command timed out after {timeout} seconds.")[
+                    -8_000:
+                ],
+                "events": CodexExecutorAdapter._json_events(full_stdout),
                 "duration_ms": int((time.monotonic() - started_at) * 1_000),
             }
-
-        full_stdout = completed.stdout
-        stdout = full_stdout[-20_000:]
         return {
-            "returncode": completed.returncode,
-            "stdout": stdout,
-            "stderr": completed.stderr[-8_000:],
+            "returncode": process.returncode,
+            "stdout": full_stdout[-20_000:],
+            "stderr": stderr[-8_000:],
             "events": CodexExecutorAdapter._json_events(full_stdout),
             "duration_ms": int((time.monotonic() - started_at) * 1_000),
         }

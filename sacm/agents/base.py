@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from sacm.schemas.context import AgentContext
 from sacm.schemas.contracts import (
@@ -22,9 +22,26 @@ class Agent(ABC):
     def run(self, context: AgentContext) -> AgentResult:
         raise NotImplementedError
 
-    def run_v1(self, task: AgentTaskV1) -> AgentResultV1:
+    def run_v1(
+        self,
+        task: AgentTaskV1,
+        *,
+        telemetry_sink: Callable[[dict[str, Any]], None] | None = None,
+    ) -> AgentResultV1:
         """Execute the legacy implementation through the versioned contract."""
-        return self._result_to_v1(task, self.run(self._context_from_v1(task)))
+        return self._result_to_v1(
+            task,
+            self.run_with_telemetry(self._context_from_v1(task), telemetry_sink),
+        )
+
+    def run_with_telemetry(
+        self,
+        context: AgentContext,
+        telemetry_sink: Callable[[dict[str, Any]], None] | None = None,
+    ) -> AgentResult:
+        """Run with an ephemeral sink; the versioned task remains serializable."""
+        del telemetry_sink
+        return self.run(context)
 
     def result_from_v1(self, result: AgentResultV1) -> AgentResult:
         """Adapt a versioned result for legacy services during the migration."""

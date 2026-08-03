@@ -17,7 +17,7 @@ class CostService:
             self.db.query(ContextEvent)
             .filter(
                 ContextEvent.task_id == task_id,
-                ContextEvent.event_type == "agent_result",
+                ContextEvent.event_type.in_(["agent_result", "agent_telemetry"]),
             )
             .all()
         )
@@ -31,7 +31,7 @@ class CostService:
             self.db.query(ContextEvent)
             .filter(
                 ContextEvent.task_id == run.task_id,
-                ContextEvent.event_type == "agent_result",
+                ContextEvent.event_type.in_(["agent_result", "agent_telemetry"]),
             )
             .order_by(ContextEvent.created_at, ContextEvent.id)
             .all()
@@ -64,6 +64,18 @@ class CostService:
         return None
 
     @staticmethod
+    def _telemetry_scope(payload: dict[str, Any]) -> str | None:
+        scope = payload.get("telemetry_scope")
+        if isinstance(scope, str):
+            return scope
+        task = CostService._mapping(payload.get("agent_task_contract"))
+        run_id = task.get("run_id")
+        step_id = task.get("step_id")
+        if isinstance(run_id, str) and isinstance(step_id, str):
+            return f"{run_id}:{step_id}"
+        return None
+
+    @staticmethod
     def _mapping(value: object) -> dict[str, Any]:
         return value if isinstance(value, dict) else {}
 
@@ -71,6 +83,21 @@ class CostService:
     def _summarize(
         task_id: str, events: list[ContextEvent]
     ) -> dict[str, Any]:
+        live_scopes = {
+            scope
+            for event in events
+            if event.event_type == "agent_telemetry"
+            for scope in [CostService._telemetry_scope(event.payload)]
+            if scope is not None
+        }
+        events = [
+            event
+            for event in events
+            if not (
+                event.event_type == "agent_result"
+                and CostService._telemetry_scope(event.payload) in live_scopes
+            )
+        ]
         totals: dict[tuple[str, str], dict[str, Any]] = defaultdict(
             lambda: {
                 "input_tokens": 0,

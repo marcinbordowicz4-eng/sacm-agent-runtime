@@ -43,6 +43,18 @@ services:
     build: .
     command: ["sacm-worker"]
     restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "from sqlalchemy import text; from sacm.infrastructure.db.session import SessionLocal; db = SessionLocal(); db.execute(text('SELECT 1')); db.close()",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     environment:
       SACM_ENVIRONMENT: ${SACM_ENVIRONMENT:-development}
       DATABASE_URL: postgresql+psycopg2://sacm:${SACM_POSTGRES_PASSWORD:-sacm-local-only}@postgres:5432/sacm

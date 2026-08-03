@@ -1,9 +1,15 @@
+import time
 from datetime import datetime, timedelta
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
 from sacm.core.lifecycle_metric_service import LifecycleMetricService
+from sacm.core.local_workflow import LocalWorkflow
 from sacm.core.run_service import RunService
 from sacm.core.workflow_backend import LocalWorkflowBackend
 from sacm.core.workflow_queue_service import WorkflowQueueService
+from sacm.infrastructure.db.models import Base, WorkflowJob
 from sacm.schemas.run import RunCreate
 
 
@@ -79,3 +85,38 @@ def test_cancelled_workflow_job_cannot_be_claimed(db):
     assert queue.claim() is None
     metrics = LifecycleMetricService(db).summary(run.id)["metrics"]
     assert any(item["metric"] == "workflow.queue_cancelled" for item in metrics)
+
+
+def test_process_one_renews_lease_while_local_workflow_blocks(tmp_path, monkeypatch):
+    engine = create_engine(f"sqlite:///{tmp_path / 'workflow-heartbeat.db'}")
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine)
+    db = sessions()
+    observer = sessions()
+    try:
+        run = _run(db)
+        queue = WorkflowQueueService(db, lease_seconds=1)
+        queue.submit(run.id)
+        observed = {}
+
+        def blocking_execute(_, run_id):
+            initial = observer.query(WorkflowJob).filter_by(run_id=run_id).one().lease_expires_at
+            time.sleep(0.15)
+            observer.expire_all()
+            renewed = observer.query(WorkflowJob).filter_by(run_id=run_id).one().lease_expires_at
+            observed["renewed"] = renewed > initial
+            return {"run_id": run_id, "status": "COMPLETED"}
+
+        monkeypatch.setenv("SACM_WORKFLOW_LEASE_HEARTBEAT_SECONDS", "0.03")
+        monkeypatch.setattr(LocalWorkflow, "execute", blocking_execute)
+
+        result = queue.process_one()
+
+        assert result is not None
+        assert result["status"] == "COMPLETED"
+        assert observed["renewed"] is True
+        assert queue.get_for_run(run.id).state == "COMPLETED"
+    finally:
+        db.close()
+        observer.close()
+        engine.dispose()

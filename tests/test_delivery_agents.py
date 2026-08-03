@@ -1,4 +1,5 @@
 import sys
+import time
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -255,6 +256,84 @@ def test_code_executor_usage_preserves_selected_provider():
     )
 
     assert usage[0]["provider"] == "copilot"
+
+
+def test_codex_executor_emits_live_tool_and_usage_telemetry(monkeypatch, tmp_path):
+    adapter = CodexExecutorAdapter(str(tmp_path))
+    events = []
+
+    def fake_run(command, cwd, timeout, **kwargs):
+        kwargs["on_json_event"](
+            {
+                "usage": {"input_tokens": 10, "output_tokens": 4},
+                "model": "gpt-5",
+            }
+        )
+        return {
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+            "events": [],
+            "duration_ms": 3,
+        }
+
+    monkeypatch.setattr(adapter, "_run", fake_run)
+
+    adapter._run_with_telemetry(
+        ["copilot", "--prompt", "implement"],
+        str(tmp_path),
+        60,
+        tool="copilot",
+        provider="copilot",
+        telemetry_sink=events.append,
+    )
+
+    assert events == [
+        {
+            "type": "tool_started",
+            "tool": "copilot",
+            "command": "copilot --prompt implement",
+        },
+        {
+            "type": "provider_usage",
+            "usage": {
+                "provider": "copilot",
+                "model": "gpt-5",
+                "operation": "code_execution",
+                "input_tokens": 10,
+                "output_tokens": 4,
+            },
+        },
+        {
+            "type": "tool_completed",
+            "tool": "copilot",
+            "command": "copilot --prompt implement",
+            "duration_ms": 3,
+            "returncode": 0,
+        },
+    ]
+
+
+def test_codex_json_usage_is_emitted_before_executor_process_returns(tmp_path):
+    callback_times = []
+    CodexExecutorAdapter._run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json, time; "
+                "print(json.dumps({'usage': {'input_tokens': 3, 'output_tokens': 2}}), "
+                "flush=True); time.sleep(0.1)"
+            ),
+        ],
+        str(tmp_path),
+        5,
+        on_json_event=lambda event: callback_times.append((event, time.monotonic())),
+    )
+    returned_at = time.monotonic()
+
+    assert callback_times[0][0]["usage"]["input_tokens"] == 3
+    assert callback_times[0][1] < returned_at
 
 
 def test_codex_executor_agent_requires_target_repository():

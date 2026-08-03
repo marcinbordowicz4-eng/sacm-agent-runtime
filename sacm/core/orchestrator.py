@@ -394,7 +394,10 @@ class Orchestrator:
                 task_status=expected_task_status,
             )
             with lease_service.guard(task_id, owner_token):
-                agent_result = selected_agent.run_v1(agent_task)
+                agent_result = selected_agent.run_v1(
+                    agent_task,
+                    telemetry_sink=self._telemetry_sink(task_id, agent_task),
+                )
             result = selected_agent.result_from_v1(agent_result)
             lease_service.heartbeat(task_id, owner_token)
             if not self.task_service.is_current(
@@ -426,6 +429,7 @@ class Orchestrator:
                 framework=getattr(selected_agent, "framework", "native"),
                 task_contract=agent_task,
                 result_contract=agent_result,
+                telemetry_scope=f"{agent_task.run_id}:{agent_task.step_id}",
             )
             self.memory_service.add_from_agent_result(task_id, result)
             self.state_service.update_belief_state(
@@ -768,6 +772,17 @@ class Orchestrator:
             "testing": "CloudExecutor",
             "reviewing": "Reviewer",
         }.get(current_status)
+
+    def _telemetry_sink(self, task_id: str, agent_task):
+        def sink(event: dict) -> None:
+            self.event_service.save_agent_telemetry(
+                task_id,
+                run_id=agent_task.run_id,
+                step_id=agent_task.step_id,
+                event=event,
+            )
+
+        return sink
 
     @staticmethod
     def _unverified_next_state(next_state_hint: str) -> str:

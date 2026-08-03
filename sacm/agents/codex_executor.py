@@ -1,3 +1,5 @@
+from typing import Any, Callable
+
 from sacm.adapters.codex_executor_adapter import CodexExecutorAdapter
 from sacm.agents.base import Agent
 from sacm.core.observability import ObservabilityService
@@ -13,6 +15,13 @@ class CodexExecutorAgent(Agent):
     CONTRIBUTES_SKILLS = ["implementation_executed", "verification_evidence_collected"]
 
     def run(self, context: AgentContext) -> AgentResult:
+        return self.run_with_telemetry(context)
+
+    def run_with_telemetry(
+        self,
+        context: AgentContext,
+        telemetry_sink: Callable[[dict[str, Any]], None] | None = None,
+    ) -> AgentResult:
         if not context.target_repo_path:
             return AgentResult(
                 agent_name=self.name,
@@ -29,6 +38,7 @@ class CodexExecutorAgent(Agent):
                 for command in (context.build_command, context.test_command)
                 if command
             ],
+            telemetry_sink=telemetry_sink,
         )
         verification_passed = all(
             command["returncode"] == 0 for command in result["verification"]

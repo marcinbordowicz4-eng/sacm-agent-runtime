@@ -70,8 +70,10 @@ class EventService:
         framework: str | None = None,
         task_contract: Any | None = None,
         result_contract: Any | None = None,
+        telemetry_scope: str | None = None,
         commit: bool = True,
     ) -> None:
+        run_id = getattr(task_contract, "run_id", None)
         self.save(
             task_id=task_id,
             event_type="agent_result",
@@ -84,6 +86,12 @@ class EventService:
                 "provider": provider,
                 "model": model,
                 "framework": framework,
+                **({"run_id": run_id} if isinstance(run_id, str) else {}),
+                **(
+                    {"telemetry_scope": telemetry_scope}
+                    if telemetry_scope is not None
+                    else {}
+                ),
                 "usage": [
                     artifact
                     for artifact in result.artifacts
@@ -106,4 +114,36 @@ class EventService:
                 ),
             },
             commit=commit,
+        )
+
+    def save_agent_telemetry(
+        self,
+        task_id: str,
+        *,
+        run_id: str,
+        step_id: str,
+        event: dict[str, Any],
+    ) -> ContextEvent:
+        event_type = event.get("type")
+        usage = event.get("usage")
+        tool_execution = (
+            {
+                key: value
+                for key, value in event.items()
+                if key in {"tool", "command", "duration_ms", "returncode"}
+            }
+            if event_type == "tool_completed"
+            else None
+        )
+        return self.save(
+            task_id,
+            "agent_telemetry",
+            {
+                "run_id": run_id,
+                "step_id": step_id,
+                "telemetry_scope": f"{run_id}:{step_id}",
+                "event": event_type,
+                "usage": [usage] if isinstance(usage, dict) else [],
+                "tool_execution": [tool_execution] if tool_execution else [],
+            },
         )

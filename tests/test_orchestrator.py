@@ -18,6 +18,7 @@ from sacm.core.task_run_lease_service import (
 from sacm.core.task_service import TaskService
 from sacm.infrastructure.db.models import Base, Task, TaskRunLease
 from sacm.schemas.context import AgentContext
+from sacm.schemas.contracts import AgentTaskV1
 
 
 def _context() -> AgentContext:
@@ -245,6 +246,37 @@ def test_orchestrator_records_progress_refreshes_and_releases_lease(db):
     assert [event["status"] for event in progress] == ["started", "finished"]
     assert all(event["task_id"] == "task-1" for event in progress)
     assert all("elapsed_ms" in event for event in progress)
+
+
+def test_orchestrator_persists_live_telemetry_outside_agent_task_contract(db):
+    from sacm.core.orchestrator import Orchestrator
+
+    _task(db)
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    orchestrator.event_service = EventService(db)
+    agent_task = AgentTaskV1(
+        run_id="run-1",
+        step_id="agent-1",
+        role="coder",
+        objective="Implement telemetry.",
+        token_budget=100,
+        timeout_seconds=60,
+    )
+
+    orchestrator._telemetry_sink("task-1", agent_task)(
+        {
+            "type": "tool_completed",
+            "tool": "copilot",
+            "duration_ms": 12,
+            "returncode": 0,
+        }
+    )
+
+    event = EventService(db).get_recent_events("task-1")[0]
+    assert event.event_type == "agent_telemetry"
+    assert event.payload["run_id"] == "run-1"
+    assert event.payload["tool_execution"][0]["duration_ms"] == 12
+    assert "telemetry_sink" not in agent_task.model_dump()
 
 
 def test_orchestrator_releases_lease_and_records_failure(db):

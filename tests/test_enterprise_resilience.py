@@ -210,6 +210,13 @@ def test_resilience_api_authentication_and_tenant_scope(tmp_path, monkeypatch):
                 params={"organization_id": org_a.id},
             )
             assert denied.status_code == 403
+            health = client.get(
+                "/v1/operations/health",
+                headers={"X-SACM-Actor": "owner-a"},
+                params={"organization_id": org_a.id},
+            )
+            assert health.status_code == 200
+            assert isinstance(health.json()["generated_at"], str)
     finally:
         app.dependency_overrides.clear()
         db.close()
