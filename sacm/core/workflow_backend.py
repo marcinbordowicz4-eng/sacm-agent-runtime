@@ -19,10 +19,19 @@ class WorkflowBackend(Protocol):
 
 class LocalWorkflowBackend:
     def __init__(self, db: Session) -> None:
-        self.workflow = LocalWorkflow(db)
+        self.db = db
 
     def execute(self, run_id: str) -> dict[str, Any]:
-        return self.workflow.execute(run_id)
+        from sacm.core.workflow_queue_service import WorkflowQueueService
+
+        job = WorkflowQueueService(self.db).submit(run_id)
+        return {
+            "run_id": run_id,
+            "status": "SCHEDULED",
+            "backend": "local",
+            "job_id": job.id,
+            "job_state": job.state,
+        }
 
 
 class TemporalWorkflowBackend:

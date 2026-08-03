@@ -65,6 +65,9 @@ class EventService:
         agent_name: str,
         result: Any,
         *,
+        provider: str | None = None,
+        model: str | None = None,
+        framework: str | None = None,
         task_contract: Any | None = None,
         result_contract: Any | None = None,
         commit: bool = True,
@@ -78,6 +81,9 @@ class EventService:
                 "confidence": result.confidence,
                 "next_state_hint": result.next_state_hint,
                 "actions": result.actions,
+                "provider": provider,
+                "model": model,
+                "framework": framework,
                 "usage": [
                     artifact
                     for artifact in result.artifacts
@@ -90,9 +96,7 @@ class EventService:
                 ],
                 **(
                     {
-                        "agent_task_contract": task_contract.model_dump(
-                            mode="json"
-                        ),
+                        "agent_task_contract": task_contract.model_dump(mode="json"),
                         "agent_result_contract": result_contract.model_dump(
                             mode="json"
                         ),

@@ -102,6 +102,29 @@ class RunService:
         self.db.refresh(run)
         return run
 
+    def create_for_task(self, task: Task) -> Run:
+        run = Run(
+            task=task,
+            organization_id=task.organization_id,
+            project_id=task.project_id,
+            tenant_attribution=task.tenant_attribution,
+            data_region=task.data_region,
+            data_classification=task.data_classification,
+            status="CREATED",
+            target_repo_path=task.target_repo_path,
+        )
+        self.db.add(run)
+        self._append_event(
+            run,
+            event_type="RunCreated",
+            actor="system",
+            payload={"task_id": task.id, "workflow_version": run.workflow_version},
+        )
+        self._checkpoint(run, "run_created")
+        self.db.commit()
+        self.db.refresh(run)
+        return run
+
     def get(self, run_id: str) -> Run | None:
         return self.db.query(Run).filter(Run.id == run_id).first()
 
@@ -323,6 +346,45 @@ class RunService:
         self.db.refresh(step)
         return step
 
+    def interrupt_step(
+        self,
+        run_id: str,
+        step_id: str,
+        *,
+        reason: str,
+        cancelled: bool = False,
+    ) -> RunStep:
+        run = self._require(run_id)
+        step = self._require_step(run_id, step_id)
+        if step.status in {"COMPLETED", "FAILED", "CANCELLED", "INTERRUPTED"}:
+            return step
+        step.status = "CANCELLED" if cancelled else "INTERRUPTED"
+        step.output = {
+            "interruption": {
+                "type": "RunCancelled" if cancelled else "StaleResultIgnored",
+                "message": reason,
+            }
+        }
+        step.completed_at = _utcnow()
+        self._append_event(
+            run,
+            event_type="StepCancelled" if cancelled else "StepInterrupted",
+            actor="system",
+            payload={"name": step.name, "reason": reason},
+            step_id=step.id,
+        )
+        self._checkpoint(run, f"step_interrupted:{step.id}")
+        self.db.commit()
+        self.db.refresh(step)
+        from sacm.core.lifecycle_metric_service import LifecycleMetricService
+
+        LifecycleMetricService(self.db).record(
+            "workflow.cancelled_step" if cancelled else "workflow.stale_result",
+            run_id=run_id,
+            details={"step_id": step.id, "reason": reason},
+        )
+        return step
+
     def cancel(self, run_id: str) -> Run:
         run = self._require(run_id)
         if run.status in {"COMPLETED", "CANCELLED"}:
@@ -352,7 +414,13 @@ class RunService:
                     job.id, "user", "Execution run cancelled."
                 )
         run.cancellation_requested = True
-        return self.transition(run_id, "CANCELLED", "RunCancelled", actor="user")
+        cancelled = self.transition(
+            run_id, "CANCELLED", "RunCancelled", actor="user"
+        )
+        from sacm.core.lifecycle_metric_service import LifecycleMetricService
+
+        LifecycleMetricService(self.db).record("workflow.cancelled", run_id=run_id)
+        return cancelled
 
     def resume(self, run_id: str) -> Run:
         run = self._require(run_id)
@@ -529,11 +597,21 @@ class RunService:
         payload: dict[str, Any],
         step_id: str | None = None,
     ) -> RuntimeEvent:
-        previous = (
+        persisted_previous = (
             self.db.query(RuntimeEvent)
             .filter(RuntimeEvent.run_id == run.id)
             .order_by(RuntimeEvent.sequence.desc())
             .first()
+        )
+        pending = [
+            event
+            for event in self.db.new
+            if isinstance(event, RuntimeEvent) and event.run_id == run.id
+        ]
+        previous = max(
+            [event for event in [persisted_previous, *pending] if event is not None],
+            key=lambda event: event.sequence,
+            default=None,
         )
         sequence = 1 if previous is None else previous.sequence + 1
         previous_hash = previous.event_hash if previous else None

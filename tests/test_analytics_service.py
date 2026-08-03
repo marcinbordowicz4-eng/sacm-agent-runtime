@@ -7,6 +7,7 @@ from sqlalchemy.pool import StaticPool
 
 from apps.api.main import app
 from sacm.core.analytics_service import AnalyticsService
+from sacm.core.event_service import EventService
 from sacm.core.external_agent_service import ExternalAgentService
 from sacm.core.run_service import RunService
 from sacm.core.tenancy_service import TenancyService
@@ -26,6 +27,7 @@ from sacm.schemas.contracts import (
     ExternalAgentStepCreate,
     UsageRecord,
 )
+from sacm.schemas.result import AgentResult
 from sacm.schemas.run import RunCreate
 from sacm.schemas.task import RepositoryReference, TaskContractV1
 
@@ -190,6 +192,30 @@ def test_legacy_analytics_use_explicit_nulls_and_ignore_runtime_actors(db):
     assert analytics.agents == []
 
 
+def test_native_agent_provenance_does_not_require_token_usage(db):
+    run = RunService(db).create(
+        RunCreate(title="Delivery preflight", description="Check GitHub delivery.")
+    )
+    EventService(db).save_agent_result(
+        run.task_id,
+        "GitHubDelivery",
+        AgentResult(
+            agent_name="GitHubDelivery",
+            summary="GitHub CLI authentication is ready.",
+            confidence=1.0,
+            next_state_hint="reviewing",
+        ),
+    )
+
+    analytics = AnalyticsService(db).recompute_run(run.id)
+
+    assert analytics.agents[0].provider == "sacm"
+    assert analytics.agents[0].model == "deterministic"
+    assert analytics.agents[0].framework == "native"
+    assert analytics.agents[0].input_tokens is None
+    assert analytics.agents[0].output_tokens is None
+
+
 def test_failure_and_cancelled_outcomes_are_classified(db):
     started = datetime(2026, 1, 1, 12, 0, 0)
     outcomes = {}
@@ -225,14 +251,10 @@ def test_analytics_aggregates_and_api_enforce_auth_and_tenancy():
             run_path = f"/v1/runs/{run.id}/analytics"
             assert client.get(run_path).status_code == 401
             assert (
-                client.get(
-                    run_path, headers={"X-SACM-Actor": "stranger"}
-                ).status_code
+                client.get(run_path, headers={"X-SACM-Actor": "stranger"}).status_code
                 == 403
             )
-            run_response = client.get(
-                run_path, headers={"X-SACM-Actor": "owner"}
-            )
+            run_response = client.get(run_path, headers={"X-SACM-Actor": "owner"})
             assert run_response.status_code == 200
             assert run_response.json()["outcome"] == "success"
 
@@ -241,9 +263,7 @@ def test_analytics_aggregates_and_api_enforce_auth_and_tenancy():
                 f"/v1/analytics/projects/{project.id}",
                 f"/v1/analytics/organizations/{organization.id}",
             ):
-                response = client.get(
-                    path, headers={"X-SACM-Actor": "owner"}
-                )
+                response = client.get(path, headers={"X-SACM-Actor": "owner"})
                 assert response.status_code == 200
                 body = response.json()
                 assert body["run_count"] == 1

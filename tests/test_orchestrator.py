@@ -1,7 +1,7 @@
 import threading
 import time
 from datetime import datetime, timedelta
-from types import MethodType
+from types import MethodType, SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -323,6 +323,67 @@ def test_task_status_optimistic_update_preserves_newer_phase(db):
 
     assert stale_update is False
     assert TaskService(db).get("task-1").status == "reviewing"
+
+
+def test_orchestrator_identifies_code_task_without_patch():
+    from sacm.core.orchestrator import Orchestrator
+
+    task = SimpleNamespace(
+        title="Modernize valuation model",
+        description="Zaimplementuj poprawny model wyceny.",
+    )
+    history = [
+        SimpleNamespace(
+            event_type="agent_result",
+            payload={
+                "agent_result_contract": {
+                    "artifacts": [
+                        {
+                            "artifact_type": "diff",
+                            "metadata": {"content": ""},
+                        }
+                    ]
+                }
+            },
+        )
+    ]
+
+    assert Orchestrator._requires_code_change(task) is True
+    assert Orchestrator._history_has_patch(history) is False
+
+
+def test_orchestrator_identifies_repository_task_as_code_change():
+    from sacm.core.orchestrator import Orchestrator
+
+    task = SimpleNamespace(
+        title="ReEstate Vision Valuation Engine",
+        description="Specification for the valuation system.",
+        target_repo_path="/repositories/real-estate-chain-mobile",
+    )
+
+    assert Orchestrator._requires_code_change(task) is True
+
+
+def test_orchestrator_detects_existing_patch():
+    from sacm.core.orchestrator import Orchestrator
+
+    history = [
+        SimpleNamespace(
+            event_type="agent_result",
+            payload={
+                "agent_result_contract": {
+                    "artifacts": [
+                        {
+                            "artifact_type": "diff",
+                            "metadata": {"content": "diff --git a/a.py b/a.py"},
+                        }
+                    ]
+                }
+            },
+        )
+    ]
+
+    assert Orchestrator._history_has_patch(history) is True
 
 
 def test_agent_registry_has_agents():

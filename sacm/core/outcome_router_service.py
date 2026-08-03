@@ -29,6 +29,60 @@ _TAG_PATTERNS = {
     "testing": r"\b(test|regression|coverage|mutation|property)\b",
 }
 
+_TASK_TYPE_PATTERNS = [
+    (
+        "delivery",
+        r"\b(release|deploy|delivery|pull request|publikac|wdroż|wydan)\w*",
+    ),
+    (
+        "security",
+        r"\b(vulnerab|exploit|penetration|security audit|podatno|bezpieczeń)\w*",
+    ),
+    (
+        "testing",
+        r"\b(add|write|fix|generate|dodaj|napisz|napraw|wygeneruj)\w*\s+"
+        r"(test|tests|coverage|testy)\b",
+    ),
+    (
+        "infrastructure",
+        r"\b(kubernetes|terraform|docker|infrastructure|infra|devops)\b",
+    ),
+    (
+        "frontend",
+        r"\b(frontend|react|ui|component|screen|ekran|komponent)\w*",
+    ),
+    (
+        "backend",
+        r"\b(backend|api|endpoint|database|schema|service|bff|baza)\w*",
+    ),
+    (
+        "implementation",
+        r"\b(implement|fix|add|change|refactor|zastosuj|wdroż|napraw|dodaj|zmień)\w*",
+    ),
+    (
+        "analysis",
+        r"\b(analy[sz]|assess|review|report|architecture|oceń|ocen|"
+        r"przeanaliz|raport|architektur)\w*",
+    ),
+]
+
+_TASK_TYPE_AGENTS = {
+    "analysis": (
+        "ClaudeReasoner",
+        "Architect",
+        "ContextAgent",
+        "OpenAIAgentsExecutor",
+    ),
+    "security": ("SecurityAuditor", "Reviewer", "SecurityDelivery"),
+    "testing": ("TestGenerator", "CloudExecutor", "MobileE2E"),
+    "infrastructure": ("InfrastructureAgent", "CloudExecutor", "CodexExecutor"),
+    "frontend": ("FrontendAgent", "CodexCoder", "CodexExecutor"),
+    "backend": ("BackendAgent", "CodexCoder", "CodexExecutor"),
+    "implementation": ("CodexCoder", "CodexExecutor", "CloudExecutor"),
+    "delivery": ("GitHubDelivery", "EASWorkflow", "SecurityDelivery"),
+    "general": ("ClaudeReasoner", "ContextAgent", "Architect"),
+}
+
 
 class OutcomeRouterService:
     """Ranks registered agents using neural priors and real outcome history."""
@@ -61,13 +115,20 @@ class OutcomeRouterService:
         if minimum_samples < 1:
             raise ValueError("SACM_ROUTER_MIN_SAMPLES must be at least 1.")
         neural = neural_result or self.neural_router.route(context_vector, belief_state)
-        agents = [
+        all_role_agents = [
             agent
             for agent in self.registry.all()
             if role is None or agent.contract_role == role
         ]
-        if not agents:
+        if not all_role_agents:
             raise ValueError(f"No registered agents satisfy role {role}.")
+        task_text = f"{task.title}\n{task.description}"
+        task_type = self.task_type(task_text)
+        preferred_order = _TASK_TYPE_AGENTS[task_type]
+        preferred_names = set(preferred_order)
+        agents = [
+            agent for agent in all_role_agents if agent.name in preferred_names
+        ] or all_role_agents
         registry_agents = self.registry.all()
         index_by_name = {
             agent.name: index for index, agent in enumerate(registry_agents)
@@ -79,7 +140,7 @@ class OutcomeRouterService:
             .filter(AgentRecord.name.in_([agent.name for agent in agents]))
             .all()
         }
-        tags = self.task_tags(f"{task.title}\n{task.description}")
+        tags = self.task_tags(task_text)
         outcomes = self._outcomes(
             [agent.name for agent in agents],
             role=role,
@@ -154,6 +215,9 @@ class OutcomeRouterService:
                         if samples
                         else 0.0
                     ),
+                    "capability_match": (
+                        1.0 if agent.name in preferred_names else 0.0
+                    ),
                 }
             )
         max_cost = max(
@@ -180,21 +244,25 @@ class OutcomeRouterService:
         trusted = [item for item in candidates if item.trusted_outcomes]
         if trusted:
             selected = trusted[0]
-            strategy: Literal["OUTCOME_ADAPTIVE", "NEURAL_FALLBACK"] = (
-                "OUTCOME_ADAPTIVE"
-            )
+            strategy = "OUTCOME_ADAPTIVE"
             fallback_reason = None
         else:
             selected = max(
                 candidates,
                 key=lambda item: (
-                    item.neural_prior,
+                    item.capability_match,
+                    -(
+                        preferred_order.index(item.agent_name)
+                        if item.agent_name in preferred_order
+                        else len(preferred_order)
+                    ),
                     -index_by_name[item.agent_name],
                 ),
             )
-            strategy = "NEURAL_FALLBACK"
+            strategy = "DETERMINISTIC_FALLBACK"
             fallback_reason = (
-                f"No candidate has the required {minimum_samples} outcome samples."
+                f"No candidate has the required {minimum_samples} outcome samples; "
+                f"selected by deterministic {task_type} capability match."
             )
         return RouterDecisionV1(
             task_id=task.id,
@@ -205,6 +273,7 @@ class OutcomeRouterService:
             role=role,
             risk_level=risk_level,
             task_tags=tags,
+            task_type=task_type,
             fallback_reason=fallback_reason,
             candidates=candidates,
         )
@@ -216,6 +285,13 @@ class OutcomeRouterService:
             for tag, pattern in _TAG_PATTERNS.items()
             if re.search(pattern, text, re.IGNORECASE)
         )
+
+    @staticmethod
+    def task_type(text: str) -> str:
+        for task_type, pattern in _TASK_TYPE_PATTERNS:
+            if re.search(pattern, text, re.IGNORECASE):
+                return task_type
+        return "general"
 
     def _outcomes(
         self,
@@ -314,9 +390,12 @@ class OutcomeRouterService:
         posterior = float(item["posterior"])
         prior = float(item["prior"])
         score = confidence * posterior + (1.0 - confidence) * prior
+        capability_match = float(item["capability_match"])
+        score += capability_match * 0.2
         reasons = [
             f"{item['samples']} real outcome sample(s) in {item['scope']} scope.",
             f"Posterior success proxy {posterior:.3f}; neural prior {prior:.3f}.",
+            f"Capability match {capability_match:.1f}.",
         ]
         average_cost = item["average_cost"]
         if average_cost is not None:
@@ -362,6 +441,7 @@ class OutcomeRouterService:
             score=score,
             trusted_outcomes=item["samples"] >= minimum_samples,
             data_scope=item["scope"],
+            capability_match=capability_match,
             reasons=reasons,
         )
 

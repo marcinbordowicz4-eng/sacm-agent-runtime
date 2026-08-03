@@ -187,6 +187,25 @@ def validate_benchmark(
     console.print(result)
 
 
+@benchmark_app.command("resilience")
+def run_resilience_benchmark(
+    output: str | None = typer.Option(None, "--output"),
+) -> None:
+    """Run deterministic lifecycle, recovery, patch, and delivery scenarios."""
+    import json
+    from pathlib import Path
+
+    from sacm.core.resilience_benchmark_service import ResilienceBenchmarkService
+
+    report = ResilienceBenchmarkService().run()
+    if output:
+        Path(output).write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    console.print(report)
+
+
 @benchmark_app.command("run")
 def run_benchmark(
     runner: str = typer.Option(..., "--runner", help="baseline-command or sacm-execution-plane"),

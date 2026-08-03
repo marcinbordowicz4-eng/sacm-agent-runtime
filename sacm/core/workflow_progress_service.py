@@ -78,11 +78,12 @@ class WorkflowProgressService:
     ) -> str:
         normalized_task = task_status.lower()
         normalized_progress = str(progress_status or "").lower()
+        if normalized_progress == "cancelled" or normalized_task == "cancelled":
+            return "cancelled"
         if normalized_progress == "failed" or normalized_task in {
             "failed",
             "error",
             "blocked",
-            "cancelled",
         }:
             return "failed"
         if normalized_progress == "finished" or normalized_task in {

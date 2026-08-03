@@ -75,8 +75,9 @@ def test_router_uses_neural_fallback_below_minimum_samples(db, monkeypatch):
         role="coder",
     )
 
-    assert decision.strategy == "NEURAL_FALLBACK"
-    assert decision.selected_agent_name == "CodexCoder"
+    assert decision.strategy == "DETERMINISTIC_FALLBACK"
+    assert decision.selected_agent_name == "BackendAgent"
+    assert decision.task_type == "backend"
     assert "not human acceptance" in decision.outcome_semantics
 
 
@@ -100,7 +101,7 @@ def test_retries_from_one_run_do_not_satisfy_sample_gate(db, monkeypatch):
     backend = next(
         item for item in decision.candidates if item.agent_name == "BackendAgent"
     )
-    assert decision.strategy == "NEURAL_FALLBACK"
+    assert decision.strategy == "DETERMINISTIC_FALLBACK"
     assert backend.samples == 1
     assert backend.trusted_outcomes is False
 
@@ -125,7 +126,7 @@ def test_router_ignores_non_terminal_outcomes(db, monkeypatch):
     backend = next(
         item for item in decision.candidates if item.agent_name == "BackendAgent"
     )
-    assert decision.strategy == "NEURAL_FALLBACK"
+    assert decision.strategy == "DETERMINISTIC_FALLBACK"
     assert backend.samples == 0
 
 
@@ -158,8 +159,8 @@ def test_router_outcomes_are_isolated_by_organization(db, monkeypatch):
     backend = next(
         item for item in decision.candidates if item.agent_name == "BackendAgent"
     )
-    assert decision.strategy == "NEURAL_FALLBACK"
-    assert decision.selected_agent_name == "CodexCoder"
+    assert decision.strategy == "DETERMINISTIC_FALLBACK"
+    assert decision.selected_agent_name == "BackendAgent"
     assert backend.samples == 0
 
 
@@ -191,6 +192,36 @@ def test_router_prefers_trusted_successful_candidate(db, monkeypatch):
     assert candidate.samples == 4
     assert candidate.trusted_outcomes is True
     assert candidate.data_scope in {"task_tags", "global"}
+
+
+def test_router_classifies_polish_analysis_and_avoids_security_delivery(
+    db, monkeypatch
+):
+    monkeypatch.setenv("SACM_ROUTER_MIN_SAMPLES", "3")
+    run = _run(
+        db,
+        title="Oceń jakość repozytorium",
+        description=(
+            "Przeanalizuj architekturę, testy i konfigurację oraz przygotuj raport."
+        ),
+    )
+    service = OutcomeRouterService(
+        db,
+        neural_router=FakeNeuralRouter("SecurityDelivery"),
+    )
+
+    decision = service.rank(
+        run.task,
+        [0.0] * 256,
+        [1.0 / 7] * 7,
+    )
+
+    assert decision.task_type == "analysis"
+    assert decision.strategy == "DETERMINISTIC_FALLBACK"
+    assert decision.selected_agent_name == "ClaudeReasoner"
+    assert "SecurityDelivery" not in {
+        candidate.agent_name for candidate in decision.candidates
+    }
 
 
 def test_router_penalizes_repeated_failure_pattern(db, monkeypatch):
@@ -262,7 +293,7 @@ def test_authenticated_rank_api_returns_explainable_fallback():
             )
             assert response.status_code == 200
             body = response.json()
-            assert body["strategy"] == "NEURAL_FALLBACK"
+            assert body["strategy"] == "DETERMINISTIC_FALLBACK"
             assert body["candidates"]
             assert body["outcome_semantics"]
     finally:

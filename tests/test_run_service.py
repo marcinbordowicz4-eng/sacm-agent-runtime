@@ -55,6 +55,30 @@ def test_run_events_are_ordered_and_hash_chained(db):
     )
 
 
+def test_multiple_pending_events_receive_unique_sequences(db):
+    service = RunService(db)
+    run = _create_run(db)
+
+    service._append_event(
+        run,
+        event_type="FailureClassified",
+        actor="system",
+        payload={"status": "failed"},
+    )
+    service._append_event(
+        run,
+        event_type="RecoveryPlanned",
+        actor="system",
+        payload={"status": "scheduled"},
+    )
+    db.commit()
+
+    events = service.events(run.id)
+
+    assert [event.sequence for event in events] == [1, 2, 3]
+    assert events[2].previous_event_hash == events[1].event_hash
+
+
 def test_run_rejects_invalid_state_transition(db):
     run = _create_run(db)
 
@@ -260,6 +284,43 @@ def test_local_workflow_repairs_failed_step_autonomously(db, monkeypatch):
     stored = RunService(db).get(run.id)
     assert stored.recovery_attempt_count == 1
     assert stored.last_recovery_action == "RETRY"
+
+
+def test_local_workflow_preserves_task_recovery_escalation(db, monkeypatch):
+    class EscalatingOrchestrator:
+        def __init__(self, _db):
+            pass
+
+        def run_task(self, task_id, **kwargs):
+            return {
+                "task_id": task_id,
+                "status": "blocked",
+                "steps": 3,
+                "recovery": {
+                    "failure": {
+                        "classification": "MODEL_STUCK",
+                        "type": "NoProgress",
+                        "message": "The model repeated the same result.",
+                        "retryable": False,
+                        "confidence": 1.0,
+                    },
+                    "decision": {
+                        "action": "ESCALATE",
+                        "status": "ESCALATED",
+                    },
+                },
+            }
+
+    monkeypatch.setattr("sacm.core.local_workflow.Orchestrator", EscalatingOrchestrator)
+    run = _create_run(db)
+
+    result = LocalWorkflow(db).execute(run.id)
+    stored = RunService(db).get(run.id)
+
+    assert result["status"] == "FAILED"
+    assert result["recovery"]["action"] == "ESCALATE"
+    assert stored.status == "FAILED"
+    assert stored.last_failure_classification == "MODEL_STUCK"
 
 
 def test_local_workflow_does_not_reopen_completed_run_on_analytics_failure(
@@ -607,11 +668,17 @@ def test_agent_events_persist_versioned_task_and_result_contracts(db):
         run.task_id,
         "Reviewer",
         legacy_result,
+        provider="sacm",
+        model="deterministic",
+        framework="native",
         task_contract=task,
         result_contract=contract_result,
     )
 
     payload = EventService(db).get_recent_events(run.task_id)[0].payload
+    assert payload["provider"] == "sacm"
+    assert payload["model"] == "deterministic"
+    assert payload["framework"] == "native"
     assert payload["agent_task_contract"]["schema_version"] == "agent-task/v1"
     assert payload["agent_result_contract"]["schema_version"] == "agent-result/v1"
 

@@ -191,7 +191,10 @@ def test_draft_pull_request_service_skips_unverified_without_delivery(db):
     assert called is False
 
 
-def test_draft_pull_request_url_and_number_are_persisted(db, tmp_path):
+def test_draft_pull_request_url_and_number_are_persisted(
+    db, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SACM_AUTO_DRAFT_PR", "true")
     task = Task(
         id="task-pr",
         title="Task",
@@ -240,7 +243,10 @@ def test_draft_pull_request_url_and_number_are_persisted(db, tmp_path):
     assert event.payload["draft"] is True
 
 
-def test_draft_pull_request_failure_is_recorded_without_reopening_task(db, tmp_path):
+def test_draft_pull_request_failure_is_recorded_without_reopening_task(
+    db, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SACM_AUTO_DRAFT_PR", "true")
     task = Task(
         id="task-pr",
         title="Task",
@@ -253,6 +259,7 @@ def test_draft_pull_request_failure_is_recorded_without_reopening_task(db, tmp_p
         task.id,
         "agent_result",
         {
+            "agent_task_contract": {"run_id": "run-1"},
             "actions": [
                 {
                     "type": "CODEX_EXECUTION",
@@ -280,3 +287,75 @@ def test_draft_pull_request_failure_is_recorded_without_reopening_task(db, tmp_p
     )
     assert event.payload["error"] == "authentication failed"
     assert event.payload["verified"] is True
+
+
+def test_draft_pull_request_delivery_defaults_on_and_honors_settings(
+    db, monkeypatch
+):
+    task = Task(id="task-pr", title="Task", description="Task", status="done")
+    db.add(task)
+    db.commit()
+    service = DraftPullRequestService(db)
+
+    monkeypatch.delenv("SACM_AUTO_DRAFT_PR", raising=False)
+    monkeypatch.delenv("SACM_CODEX_AUTO_CREATE_PR", raising=False)
+    assert service.publish(task.id, verified=True)["reason"] == "no_task_branch"
+
+    monkeypatch.setenv("SACM_AUTO_DRAFT_PR", "false")
+    assert service.publish(task.id, verified=True)["reason"] == "disabled"
+
+    monkeypatch.delenv("SACM_AUTO_DRAFT_PR")
+    monkeypatch.setenv("SACM_CODEX_AUTO_CREATE_PR", "false")
+    assert service.publish(task.id, verified=True)["reason"] == "disabled"
+
+    monkeypatch.setenv("SACM_CODEX_AUTO_CREATE_PR", "true")
+    assert service.publish(task.id, verified=True)["reason"] == "no_task_branch"
+
+
+def test_draft_pull_request_uses_branch_from_verified_run_only(
+    db, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SACM_AUTO_DRAFT_PR", "true")
+    task = Task(id="task-pr", title="Task", description="Task", status="done")
+    db.add(task)
+    db.commit()
+    events = EventService(db)
+    events.save(
+        task.id,
+        "agent_result",
+        {
+            "agent_task_contract": {"run_id": "verified-run"},
+            "actions": [
+                {
+                    "type": "CODEX_EXECUTION",
+                    "worktree_path": str(tmp_path),
+                    "branch_name": "sacm/verified",
+                }
+            ],
+        },
+    )
+    events.save(
+        task.id,
+        "agent_result",
+        {
+            "agent_task_contract": {"run_id": "newer-unverified-run"},
+            "actions": [
+                {
+                    "type": "CODEX_EXECUTION",
+                    "worktree_path": str(tmp_path),
+                    "branch_name": "sacm/unverified",
+                }
+            ],
+        },
+    )
+
+    class DeliveredGitHub:
+        def publish_draft_pull_request(self, **kwargs):
+            return {"status": "delivered", "branch": kwargs["branch_name"]}
+
+    result = DraftPullRequestService(
+        db, github_factory=lambda path: DeliveredGitHub()
+    ).publish(task.id, verified=True, run_id="verified-run")
+
+    assert result["status"] == "delivered"
+    assert result["branch_name"] == "sacm/verified"

@@ -106,11 +106,7 @@ class AnalyticsService:
         usage = self._summed_usage(agent_rows)
         run_links = [link for link in links if link.run_id == run.id]
         changed_files = sorted(
-            {
-                link.target_id
-                for link in run_links
-                if link.target_type == "changed_file"
-            }
+            {link.target_id for link in run_links if link.target_type == "changed_file"}
             | self._event_values(runtime_events, "changed_files")
             | {
                 str(path)
@@ -122,9 +118,7 @@ class AnalyticsService:
             link.target_id for link in run_links if link.target_type == "test"
         )
         verifications = sorted(
-            link.target_id
-            for link in run_links
-            if link.target_type == "verification"
+            link.target_id for link in run_links if link.target_type == "verification"
         )
         failures = [
             {
@@ -217,7 +211,9 @@ class AnalyticsService:
             "source_revision": run.source_revision,
             "snapshot_count": len(run.snapshots),
             "latest_snapshot_id": run.snapshots[-1].id if run.snapshots else None,
-            "replay_run_ids": sorted(link.replay_run_id for link in run.replay_source_links),
+            "replay_run_ids": sorted(
+                link.replay_run_id for link in run.replay_source_links
+            ),
         }
         values: dict[str, Any] = {
             "id": self._stable_id("run", run.id),
@@ -269,9 +265,7 @@ class AnalyticsService:
             "source_snapshot_id": replay.source_snapshot_id if replay else None,
             "replay_count": len(run.replay_source_links),
             "changed_file_count": len(changed_files),
-            "test_count": max(
-                len(tests), sum(row.test_count for row in agent_rows)
-            ),
+            "test_count": max(len(tests), sum(row.test_count for row in agent_rows)),
             "verification_count": max(
                 len(verifications),
                 sum(row.verification_count for row in agent_rows),
@@ -312,7 +306,9 @@ class AnalyticsService:
             for run in sorted(runs, key=lambda item: (item.created_at, item.id))
         ]
         outcomes = [item.outcome for item in run_reads]
-        latencies = [item.latency_ms for item in run_reads if item.latency_ms is not None]
+        latencies = [
+            item.latency_ms for item in run_reads if item.latency_ms is not None
+        ]
         evidence_coverage = [
             item.evidence_coverage_percent
             for item in run_reads
@@ -381,14 +377,14 @@ class AnalyticsService:
                 if requirement_coverage
                 else None
             ),
-            policy_blocked_run_count=sum(item.policy_blocked is True for item in run_reads),
+            policy_blocked_run_count=sum(
+                item.policy_blocked is True for item in run_reads
+            ),
             approval_count=sum(item.approval_count for item in run_reads),
             pending_approval_count=sum(
                 item.pending_approval_count for item in run_reads
             ),
-            security_finding_count=(
-                sum(security_counts) if security_counts else None
-            ),
+            security_finding_count=(sum(security_counts) if security_counts else None),
             open_security_finding_count=(
                 sum(open_security_counts) if open_security_counts else None
             ),
@@ -400,7 +396,9 @@ class AnalyticsService:
                 item.agent_invocation_count for item in run_reads
             ),
             legacy_run_count=sum(item.legacy_data for item in run_reads),
-            incomplete_run_count=sum(item.data_state != "complete" for item in run_reads),
+            incomplete_run_count=sum(
+                item.data_state != "complete" for item in run_reads
+            ),
             runs=run_reads,
             computed_at=datetime.utcnow(),
         )
@@ -431,9 +429,7 @@ class AnalyticsService:
             str(item.get("artifact_type", "")).lower() for item in artifacts
         ]
         tool_records = [
-            item
-            for item in payload.get("tool_execution", [])
-            if isinstance(item, dict)
+            item for item in payload.get("tool_execution", []) if isinstance(item, dict)
         ]
         changed_files = {
             str(path)
@@ -446,18 +442,25 @@ class AnalyticsService:
             if link.run_id == run.id
             and (
                 link.target_id == event.id
-                or step is not None and link.target_id == step.id
+                or step is not None
+                and link.target_id == step.id
             )
         }
         agent_name = str(payload.get("agent_name") or "unknown-agent")
         framework: str | None
         if ":" in agent_name:
             framework, plain_name = agent_name.split(":", 1)
+            native_agent = False
         else:
             framework = (
-                str(step.input_.get("framework")) if step and step.input_.get("framework") else None
+                str(payload.get("framework"))
+                if payload.get("framework")
+                else str(step.input_.get("framework"))
+                if step and step.input_.get("framework")
+                else "native"
             )
             plain_name = agent_name
+            native_agent = True
         status = result.get("status")
         failure = self._mapping(result.get("failure")) or None
         latency = (
@@ -473,8 +476,16 @@ class AnalyticsService:
             "schema_version": "agent-outcome-analytics/v1",
             "agent_name": plain_name,
             "role": task_contract.get("role"),
-            "provider": usage_records[0].get("provider") if usage_records else None,
-            "model_name": usage_records[0].get("model") if usage_records else None,
+            "provider": (
+                usage_records[0].get("provider")
+                if usage_records
+                else payload.get("provider") or ("sacm" if native_agent else None)
+            ),
+            "model_name": (
+                usage_records[0].get("model")
+                if usage_records
+                else payload.get("model") or ("deterministic" if native_agent else None)
+            ),
             "framework": framework,
             "status": str(status) if status is not None else None,
             "outcome": self._outcome(str(status)) if status is not None else None,
@@ -539,7 +550,9 @@ class AnalyticsService:
             and link.target_id == step.id
         ]
         event_values = [event for event in events if event.step_id == step.id]
-        input_tokens = [item.input_tokens for item in agents if item.input_tokens is not None]
+        input_tokens = [
+            item.input_tokens for item in agents if item.input_tokens is not None
+        ]
         output_tokens = [
             item.output_tokens for item in agents if item.output_tokens is not None
         ]
@@ -625,9 +638,7 @@ class AnalyticsService:
     def _event_run_id(payload: dict[str, Any]) -> str | None:
         for value in (
             payload.get("run_id"),
-            AnalyticsService._mapping(payload.get("agent_task_contract")).get(
-                "run_id"
-            ),
+            AnalyticsService._mapping(payload.get("agent_task_contract")).get("run_id"),
             AnalyticsService._mapping(payload.get("agent_result_contract")).get(
                 "run_id"
             ),
@@ -691,7 +702,9 @@ class AnalyticsService:
         return None
 
     @staticmethod
-    def _latency(started_at: datetime | None, completed_at: datetime | None) -> int | None:
+    def _latency(
+        started_at: datetime | None, completed_at: datetime | None
+    ) -> int | None:
         if started_at is None or completed_at is None:
             return None
         return max(0, round((completed_at - started_at).total_seconds() * 1000))
@@ -766,9 +779,7 @@ class AnalyticsService:
             if isinstance(item.get("estimated_cost_usd"), (int, float))
         ]
         return {
-            "input_tokens": sum(
-                int(item.get("input_tokens") or 0) for item in records
-            ),
+            "input_tokens": sum(int(item.get("input_tokens") or 0) for item in records),
             "output_tokens": sum(
                 int(item.get("output_tokens") or 0) for item in records
             ),
@@ -784,9 +795,7 @@ class AnalyticsService:
             if row.input_tokens is not None or row.output_tokens is not None
         ]
         costs = [
-            row.estimated_cost_usd
-            for row in rows
-            if row.estimated_cost_usd is not None
+            row.estimated_cost_usd for row in rows if row.estimated_cost_usd is not None
         ]
         breakdown = [
             {
@@ -805,9 +814,7 @@ class AnalyticsService:
         return {
             "has_usage": bool(with_usage),
             "input_tokens": (
-                sum(row.input_tokens or 0 for row in with_usage)
-                if with_usage
-                else None
+                sum(row.input_tokens or 0 for row in with_usage) if with_usage else None
             ),
             "output_tokens": (
                 sum(row.output_tokens or 0 for row in with_usage)
@@ -832,7 +839,9 @@ class AnalyticsService:
     @staticmethod
     def _payload_values(payload: dict[str, Any], key: str) -> set[str]:
         value = payload.get(key, [])
-        return {str(item) for item in value if item} if isinstance(value, list) else set()
+        return (
+            {str(item) for item in value if item} if isinstance(value, list) else set()
+        )
 
     @classmethod
     def _event_values(cls, events: list[RuntimeEvent], key: str) -> set[str]:
@@ -857,9 +866,9 @@ class AnalyticsService:
                 values,
                 sort_keys=True,
                 separators=(",", ":"),
-                default=lambda value: value.isoformat()
-                if isinstance(value, datetime)
-                else str(value),
+                default=lambda value: (
+                    value.isoformat() if isinstance(value, datetime) else str(value)
+                ),
             ).encode()
         ).hexdigest()
 
@@ -870,9 +879,7 @@ class AnalyticsService:
         agents: list[AgentOutcomeAnalytics],
     ) -> RunOutcomeAnalyticsV1:
         organization_id = (
-            row.run.project.organization_id
-            if row.run.project is not None
-            else None
+            row.run.project.organization_id if row.run.project is not None else None
         )
         return RunOutcomeAnalyticsV1(
             schema_version="outcome-analytics/v1",

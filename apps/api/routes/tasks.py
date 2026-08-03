@@ -8,8 +8,9 @@ from sacm.core.bdd_traceability import BddTraceabilityService
 from sacm.core.cost_service import CostService
 from sacm.core.event_service import EventService
 from sacm.core.memory_service import MemoryService
-from sacm.core.orchestrator import Orchestrator
+from sacm.core.run_service import RunService
 from sacm.core.task_service import TaskService
+from sacm.core.workflow_backend import workflow_backend
 from sacm.infrastructure.db.models import Artifact
 from sacm.infrastructure.db.session import get_db
 from sacm.schemas.event import ContextEventRead
@@ -54,7 +55,8 @@ def run_task(task_id: str, db: Session = Depends(get_db)) -> dict:
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     try:
-        return Orchestrator(db).run_task(task_id)
+        run = RunService(db).create_for_task(task)
+        return workflow_backend(db).execute(run.id)
     except (OSError, RuntimeError, ValueError) as exc:
         raise HTTPException(
             status_code=409, detail=f"Task execution failed: {exc}"

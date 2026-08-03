@@ -16,7 +16,11 @@ def search_memory(
     db: Session = Depends(get_db),
 ) -> list[MemoryChunkRead]:
     chunks = MemoryService(db).search(
-        payload.task_id, payload.query, payload.top_k, actor
+        payload.task_id,
+        payload.query,
+        payload.top_k,
+        actor,
+        scopes=payload.scopes,
     )
     return [MemoryChunkRead.model_validate(chunk) for chunk in chunks]
 
@@ -33,5 +37,10 @@ def add_memory(
         source_type=payload.source_type,
         importance=payload.importance,
         actor_id=actor,
+        source_id=payload.source_id,
+        confidence=payload.confidence,
+        scope=payload.scope,
+        valid_until=payload.valid_until,
+        supersedes_id=payload.supersedes_id,
     )
     return MemoryChunkRead.model_validate(chunk)

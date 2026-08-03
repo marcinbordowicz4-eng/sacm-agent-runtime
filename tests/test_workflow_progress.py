@@ -126,3 +126,7 @@ def test_progress_service_reports_stalled_finished_and_failed(db):
     task.status = "failed"
     db.commit()
     assert service.get(task.id).state == "failed"
+
+    task.status = "cancelled"
+    db.commit()
+    assert service.get(task.id).state == "cancelled"

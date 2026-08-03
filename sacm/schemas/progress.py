@@ -21,7 +21,7 @@ class WorkflowProgressV1(BaseModel):
     )
     task_id: str
     task_status: str
-    state: Literal["running", "stalled", "finished", "failed"]
+    state: Literal["running", "stalled", "finished", "failed", "cancelled"]
     lease_active: bool
     phase: str | None = None
     agent: str | None = None

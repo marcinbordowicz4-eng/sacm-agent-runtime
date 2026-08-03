@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from sacm.core.agent_registry import AgentRegistry
 from sacm.core.auth_service import require_authenticated_actor
 from sacm.core.context_compiler import ContextCompiler
+from sacm.core.context_briefing_service import ContextBriefingService
 from sacm.core.event_service import EventService
 from sacm.core.memory_service import MemoryService
 from sacm.core.tenancy_service import ResourceAuthorizationService
@@ -39,7 +40,22 @@ def compile_context(
         payload.task_id, task.description, actor_id=actor
     )
     compiler = ContextCompiler(token_budget=payload.token_budget)
-    return compiler.compile(task, agent, history, memory)
+    context_package = None
+    briefing = None
+    if task.target_repo_path:
+        generated = ContextBriefingService(db).build(
+            task, role=agent.contract_role
+        )
+        context_package = generated.package
+        briefing = generated.metadata
+    return compiler.compile(
+        task,
+        agent,
+        history,
+        memory,
+        context_package=context_package,
+        briefing=briefing,
+    )
 
 
 @router.post("/ingest", response_model=MemoryChunkRead)

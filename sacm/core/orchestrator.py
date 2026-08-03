@@ -1,4 +1,5 @@
 import os
+import re
 import time
 
 from sqlalchemy.orm import Session
@@ -16,10 +17,12 @@ from sacm.core.observability import ObservabilityService
 from sacm.core.outcome_router_service import OutcomeRouterService
 from sacm.core.router import RouterService
 from sacm.core.state_service import StateService
+from sacm.core.task_recovery_service import TaskRecoveryService
 from sacm.core.task_run_lease_service import TaskRunLeaseService
 from sacm.core.task_service import TaskService
 from sacm.core.verifier import Verifier
 from sacm.schemas.application_context import ContextExpansionRequest
+from sacm.schemas.recovery import RecoveryAction
 
 MAX_STEPS = int(os.getenv("SACM_MAX_AGENT_STEPS", "10"))
 
@@ -39,6 +42,7 @@ class Orchestrator:
         self.embedding_service = EmbeddingService()
         self.feedback_service = FeedbackService(db, self.router_service)
         self.observability = ObservabilityService()
+        self.task_recovery = TaskRecoveryService(db)
         self.outcome_router = OutcomeRouterService(
             db,
             registry=self.agent_registry,
@@ -140,6 +144,13 @@ class Orchestrator:
         verification_complete = False
         delivery_result = None
         trace = self.observability.start_task(task_id, max_steps)
+        active_recovery = recovery_context
+        recovery_history = list((recovery_context or {}).get("history", []))
+        recovery_attempt_count = int(
+            (recovery_context or {}).get("decision", {}).get("attempt", 0)
+        )
+        outcome_signatures: set[str] = set()
+        last_recovery: dict | None = recovery_context
 
         for step_index in range(max_steps):
             steps_taken = step_index + 1
@@ -150,10 +161,8 @@ class Orchestrator:
             expected_task_updated_at = task.updated_at
 
             history = self.event_service.get_recent_events(task_id)
-            recovery_action = (
-                (recovery_context or {}).get("decision", {}).get("action")
-            )
-            recovery_failure = (recovery_context or {}).get("failure", {})
+            recovery_action = (active_recovery or {}).get("decision", {}).get("action")
+            recovery_failure = (active_recovery or {}).get("failure", {})
             query = task.description
             if recovery_failure.get("message"):
                 query = f"{query}\nRecovery failure: {recovery_failure['message']}"
@@ -169,7 +178,9 @@ class Orchestrator:
                 },
             )
 
-            context_vector = self.embedding_service.embed_task_context(task, history, memory)
+            context_vector = self.embedding_service.embed_task_context(
+                task, history, memory
+            )
             belief_state = self.state_service.get_belief_state(task_id)
 
             routing_result = self.router_service.route(
@@ -198,7 +209,7 @@ class Orchestrator:
                 routing_result["selected_agent_index"]
             )
             phase_agent = self._phase_agent_name(task.status)
-            if phase_agent and not recovery_action:
+            if phase_agent and not active_recovery:
                 selected_agent = (
                     self.agent_registry.get(phase_agent) or selected_agent
                 )
@@ -211,10 +222,47 @@ class Orchestrator:
                     ),
                     selected_agent,
                 )
+            elif recovery_action == "REPAIR_CODE":
+                selected_agent = next(
+                    (
+                        agent
+                        for agent in self.agent_registry.all()
+                        if agent.contract_role == "coder"
+                    ),
+                    selected_agent,
+                )
+            elif recovery_action == "DEBUG":
+                selected_agent = next(
+                    (
+                        agent
+                        for agent in self.agent_registry.all()
+                        if agent.contract_role == "tester"
+                    ),
+                    selected_agent,
+                )
+            elif recovery_action == "EXPAND_CONTEXT":
+                selected_agent = (
+                    self.agent_registry.get("ContextAgent") or selected_agent
+                )
             elif recovery_action == "SWITCH_MODEL":
+                failed_agent_name = (active_recovery or {}).get("failed_agent_name")
+                agent_names = self.agent_registry.names()
+                failed_agent_index = (
+                    agent_names.index(failed_agent_name)
+                    if failed_agent_name in agent_names
+                    else agent_names.index(selected_agent.name)
+                )
                 selected_agent = self.agent_registry.get_by_index(
-                    routing_result["selected_agent_index"]
-                    + int((recovery_context or {}).get("decision", {}).get("attempt", 1))
+                    failed_agent_index + 1
+                )
+            if (
+                step_index >= 2
+                and self._requires_code_change(task)
+                and not self._history_has_patch(history)
+                and recovery_action not in {"REPLAN", "EXPAND_CONTEXT"}
+            ):
+                selected_agent = (
+                    self.agent_registry.get("CodexExecutor") or selected_agent
                 )
             executed_agent_index = self.agent_registry.names().index(
                 selected_agent.name
@@ -244,7 +292,18 @@ class Orchestrator:
                     "minimum_samples": outcome_decision.minimum_samples,
                     "risk_level": outcome_decision.risk_level,
                     "task_tags": outcome_decision.task_tags,
+                    "task_type": outcome_decision.task_type,
                     "fallback_reason": outcome_decision.fallback_reason,
+                    "candidates": [
+                        {
+                            "agent_name": candidate.agent_name,
+                            "score": candidate.score,
+                            "capability_match": candidate.capability_match,
+                            "trusted_outcomes": candidate.trusted_outcomes,
+                            "reasons": candidate.reasons,
+                        }
+                        for candidate in outcome_decision.candidates
+                    ],
                     "outcome_semantics": outcome_decision.outcome_semantics,
                 },
             )
@@ -291,9 +350,23 @@ class Orchestrator:
                 history=history,
                 memory=memory,
                 context_package=context_package,
+                briefing={
+                    "schema_version": "task-briefing/v1",
+                    "acceptance_criteria": context_package.requirements,
+                    "relevant_files": sorted(
+                        {item.path for item in context_package.files}
+                    ),
+                    "test_files": sorted(
+                        {
+                            node.path
+                            for node in context_package.nodes
+                            if node.path and node.type == "test_symbol"
+                        }
+                    ),
+                },
             )
-            if recovery_context:
-                decision = recovery_context["decision"]
+            if active_recovery:
+                decision = active_recovery["decision"]
                 compiled_context.constraints = [
                     f"Recovery action: {decision['action']}",
                     *decision.get("instructions", []),
@@ -309,8 +382,8 @@ class Orchestrator:
                 agent=selected_agent,
                 context=compiled_context,
             )
-            if recovery_context:
-                agent_task.execution_context["recovery"] = recovery_context
+            if active_recovery:
+                agent_task.execution_context["recovery"] = active_recovery
             lease_service.heartbeat(task_id, owner_token)
             self._save_progress(
                 task_id,
@@ -350,11 +423,16 @@ class Orchestrator:
                 task_id,
                 selected_agent.name,
                 result,
+                provider=getattr(selected_agent, "provider", "sacm"),
+                model=getattr(selected_agent, "model", "deterministic"),
+                framework=getattr(selected_agent, "framework", "native"),
                 task_contract=agent_task,
                 result_contract=agent_result,
             )
             self.memory_service.add_from_agent_result(task_id, result)
-            self.state_service.update_belief_state(task_id, routing_result["next_belief"])
+            self.state_service.update_belief_state(
+                task_id, routing_result["next_belief"]
+            )
 
             lease_service.heartbeat(task_id, owner_token)
             self._save_progress(
@@ -486,6 +564,111 @@ class Orchestrator:
                     )
                 break
 
+            signature = self.task_recovery.outcome_signature(
+                selected_agent.name,
+                result,
+                verification,
+            )
+            repeated_outcome = signature in outcome_signatures
+            outcome_signatures.add(signature)
+            failure = self.task_recovery.diagnose(
+                agent_result=agent_result,
+                result=result,
+                verification=verification,
+                repeated_outcome=repeated_outcome,
+                step_budget_exhausted=step_index + 1 >= max_steps,
+            )
+            active_recovery = None
+            if failure is not None:
+                if step_index + 1 >= max_steps and failure.retryable:
+                    failure = failure.model_copy(
+                        update={
+                            "retryable": False,
+                            "message": (
+                                f"{failure.message} Agent step budget exhausted."
+                            ),
+                        }
+                    )
+                decision = self.task_recovery.plan(
+                    failure,
+                    attempt_count=recovery_attempt_count,
+                    history=recovery_history,
+                )
+                recovery_attempt_count = decision.attempt
+                failure_payload = failure.model_dump(mode="json")
+                decision_payload = decision.model_dump(mode="json")
+                history_entry: dict = {
+                    "attempt": decision.attempt,
+                    "step": step_index + 1,
+                    "agent_name": selected_agent.name,
+                    "failure": failure_payload,
+                    "decision": decision_payload,
+                }
+                recovery_history.append(history_entry)
+                self.event_service.save(
+                    task_id,
+                    "FailureClassified",
+                    failure_payload,
+                )
+                self.event_service.save(
+                    task_id,
+                    "RecoveryPlanned",
+                    decision_payload,
+                )
+                recovery_payload = {
+                    "failure": failure_payload,
+                    "decision": decision_payload,
+                    "history": recovery_history,
+                    "failed_agent_name": selected_agent.name,
+                }
+                last_recovery = recovery_payload
+                if decision.action == RecoveryAction.ESCALATE:
+                    self.event_service.save(
+                        task_id,
+                        "RecoveryEscalated",
+                        decision_payload,
+                    )
+                    updated = self.task_service.update_status(
+                        task_id,
+                        "blocked",
+                        expected_status=expected_task_status,
+                        expected_updated_at=expected_task_updated_at,
+                    )
+                    if not updated:
+                        raise RuntimeError(
+                            f"Task {task_id} changed before recovery escalation; "
+                            "the stale orchestrator result was not applied."
+                        )
+                    break
+                active_recovery = recovery_payload
+                self.event_service.save(
+                    task_id,
+                    "RecoveryScheduled",
+                    {
+                        **decision_payload,
+                        "agent_name": selected_agent.name,
+                    },
+                )
+                updated = self.task_service.update_status(
+                    task_id,
+                    {
+                        RecoveryAction.REPAIR_CODE: "coding",
+                        RecoveryAction.DEBUG: "debugging",
+                        RecoveryAction.REPLAN: "planning",
+                        RecoveryAction.EXPAND_CONTEXT: "planning",
+                        RecoveryAction.SWITCH_MODEL: "planning",
+                        RecoveryAction.RETRY: "coding",
+                    }[decision.action],
+                    expected_status=expected_task_status,
+                    expected_updated_at=expected_task_updated_at,
+                )
+                if not updated:
+                    raise RuntimeError(
+                        f"Task {task_id} changed before recovery transition; "
+                        "the stale orchestrator result was not applied."
+                    )
+                continue
+
             if result.next_state_hint:
                 updated = self.task_service.update_status(
                     task_id,
@@ -527,6 +710,7 @@ class Orchestrator:
                 delivery_result.get("status") if delivery_result else None
             ),
             "delivery": delivery_result,
+            **({"recovery": last_recovery} if last_recovery else {}),
         }
         trace.finish(
             {
@@ -582,3 +766,32 @@ class Orchestrator:
     @staticmethod
     def _should_initialize_planning(current_status: str) -> bool:
         return current_status == "pending"
+
+    @staticmethod
+    def _requires_code_change(task) -> bool:
+        if getattr(task, "target_repo_path", None):
+            return True
+        text = f"{task.title}\n{task.description}"
+        return bool(
+            re.search(
+                r"\b(implement|fix|add|update|migrate|refactor|build|create|"
+                r"zaimplement\w*|zmodernizuj\w*|napraw\w*|dodaj\w*)\b",
+                text,
+                re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
+    def _history_has_patch(history) -> bool:
+        for event in history:
+            if event.event_type != "agent_result":
+                continue
+            payload = event.payload or {}
+            contract = payload.get("agent_result_contract") or {}
+            for artifact in contract.get("artifacts") or []:
+                if artifact.get("artifact_type") != "diff":
+                    continue
+                content = (artifact.get("metadata") or {}).get("content")
+                if isinstance(content, str) and content.strip():
+                    return True
+        return False

@@ -19,10 +19,11 @@ class ContextCompiler:
         history: list[ContextEvent],
         memory: list[MemoryChunk],
         context_package: ContextPackageV2 | None = None,
+        briefing: dict[str, Any] | None = None,
     ) -> AgentContext:
         repository_config = load_repository_config(task.target_repo_path)
         task_text = self._trim(task.description, self.token_budget)
-        goal = self._trim(f"Complete task: {task.title}", self.token_budget)
+        goal = self._trim(f"Complete task: {task.description}", self.token_budget)
         constraints = [
             f"Agent role: {agent.role}",
             f"Token budget: {self.token_budget}",
@@ -89,6 +90,7 @@ class ContextCompiler:
             ),
             token_budget=self.token_budget,
             context_package=package_payload,
+            briefing=briefing,
         )
 
     def compile_v1(

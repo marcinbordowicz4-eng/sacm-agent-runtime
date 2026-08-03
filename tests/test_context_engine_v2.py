@@ -3,6 +3,7 @@ import hashlib
 from sacm.agents.claude_reasoner import ClaudeReasonerAgent
 from sacm.core.application_context_service import ApplicationContextService
 from sacm.core.context_compiler import ContextCompiler
+from sacm.core.context_briefing_service import ContextBriefingService
 from sacm.core.context_engine_service import ContextEngineService
 from sacm.core.task_intake_service import TaskIntakeService
 from sacm.infrastructure.db.models import ContextEvent, Run
@@ -120,6 +121,35 @@ def test_context_package_traverses_and_persists_evidence(
     assert latest is not None
     assert latest.package_hash == package.package_hash
     assert all(not item.content_included for item in latest.files)
+
+
+def test_initial_briefing_includes_files_risk_tests_and_context_package(
+    db, tmp_path, monkeypatch
+):
+    task = _task_with_graph(db, tmp_path, monkeypatch)
+
+    briefing = ContextBriefingService(db).build(task, role="reasoner")
+    context = ContextCompiler().compile(
+        task,
+        ClaudeReasonerAgent(),
+        history=[],
+        memory=[],
+        context_package=briefing.package,
+        briefing=briefing.metadata,
+    )
+
+    assert context.context_package is not None
+    assert context.files
+    assert context.briefing["risk"]["level"] in {
+        "low",
+        "medium",
+        "high",
+        "critical",
+    }
+    assert "tests/test_orders.py" in context.briefing["test_files"]
+    assert context.briefing["acceptance_criteria"] == [
+        "Invalid orders are rejected."
+    ]
 
 
 def test_context_package_refreshes_graph_after_workspace_change(

@@ -972,10 +972,28 @@ class MemoryChunk(Base):
     task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), nullable=False)
     source_type: Mapped[str] = mapped_column(String, nullable=False)
     source_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    scope: Mapped[str] = mapped_column(
+        String, nullable=False, default="task", index=True
+    )
+    scope_key: Mapped[str] = mapped_column(String, nullable=False, index=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String, nullable=False, index=True)
     embedding: Mapped[Any | None] = mapped_column(embedding_column(), nullable=True)
     importance: Mapped[float] = mapped_column(Float, default=0.5)
+    confidence: Mapped[float] = mapped_column(Float, default=0.7)
+    valid_until: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, index=True
+    )
+    supersedes_id: Mapped[str | None] = mapped_column(
+        ForeignKey("memory_chunks.id"), nullable=True, index=True
+    )
+    superseded_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
     task: Mapped["Task"] = relationship("Task", back_populates="memory_chunks")
 
@@ -1118,6 +1136,59 @@ class Run(Base):
         "AgentOutcomeAnalytics",
         back_populates="run",
         cascade="all, delete-orphan",
+    )
+
+
+class WorkflowJob(Base):
+    __tablename__ = "workflow_jobs"
+    __table_args__ = (
+        UniqueConstraint("run_id", name="uq_workflow_jobs_run"),
+        CheckConstraint(
+            "state IN ('QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED')",
+            name="ck_workflow_jobs_state",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    state: Mapped[str] = mapped_column(
+        String, nullable=False, default="QUEUED", index=True
+    )
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, index=True
+    )
+    lease_token: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, index=True
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class LifecycleMetric(Base):
+    __tablename__ = "lifecycle_metrics"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    task_id: Mapped[str | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    metric: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    value: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    details: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, index=True
     )
 
 

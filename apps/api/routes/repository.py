@@ -85,7 +85,7 @@ def apply_patch(
     audit = RepositoryAuditService(db)
     audit.authorize(payload.task_id, payload.repo_path, actor, "tasks.write")
     adapter = RepositoryAdapter(payload.repo_path)
-    adapter.apply_patch(payload.patch)
+    patch_result = adapter.apply_patch(payload.patch)
     diff = adapter.get_diff()
     summary = RepositoryAuditService.content_summary(payload.patch)
     changed_files = RepositoryAuditService.changed_files(diff)
@@ -105,7 +105,7 @@ def apply_patch(
         actor_id=actor,
         permission="tasks.write",
     )
-    return {"status": "applied"}
+    return patch_result
 
 
 @router.post("/run-tests")
