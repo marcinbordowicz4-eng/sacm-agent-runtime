@@ -5,11 +5,12 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from sacm.adapters.github_adapter import GitHubAdapter
 from sacm.adapters.repository_adapter import RepositoryAdapter, RepositoryPathError
 from sacm.core.draft_pull_request_service import DraftPullRequestService
 from sacm.core.event_service import EventService
@@ -105,6 +106,8 @@ class ResilienceBenchmarkService:
         if claimed is None:
             raise AssertionError("Initial claim failed.")
         job = queue.get_for_run(run.id)
+        if job is None:
+            raise AssertionError("Queued job was not found.")
         job.lease_expires_at = datetime.utcnow() - timedelta(seconds=1)
         db.commit()
         reclaimed = queue.claim()
@@ -139,10 +142,17 @@ class ResilienceBenchmarkService:
                 "details": {"failure_reason": "INFRASTRUCTURE_RESOURCE"},
             },
         )
-        _, report, decision = RecoveryService(db).handle(
+        recovered_step, report, decision = RecoveryService(db).handle(
             run.id,
             step.id,
-            (runs.get_step(run.id, step.id).output or {})["failure"],
+            (
+                (
+                    current_step.output
+                    if (current_step := runs.get_step(run.id, step.id)) is not None
+                    else None
+                )
+                or {}
+            )["failure"],
         )
         if report.classification.value != "ENVIRONMENT" or decision.action.value != "RETRY":
             raise AssertionError("Infrastructure failure selected the wrong fallback.")
@@ -211,22 +221,28 @@ class ResilienceBenchmarkService:
             },
         )
 
-        class FakeGitHub:
+        class FakeGitHub(GitHubAdapter):
             calls = 0
 
-            def publish_draft_pull_request(self, **kwargs):
+            def publish_draft_pull_request(
+                self,
+                title: str,
+                body: str,
+                branch_name: str,
+                base: str = "main",
+            ) -> dict[str, Any]:
                 FakeGitHub.calls += 1
                 return {
                     "status": "delivered",
                     "outcome": "created" if FakeGitHub.calls == 1 else "reused",
-                    "branch": kwargs["branch_name"],
+                    "branch": branch_name,
                 }
 
         previous = os.environ.get("SACM_AUTO_DRAFT_PR")
         os.environ["SACM_AUTO_DRAFT_PR"] = "true"
         try:
             service = DraftPullRequestService(
-                db, github_factory=lambda path: FakeGitHub()
+                db, github_factory=lambda path: FakeGitHub(path)
             )
             first = service.publish(run.task_id, verified=True, run_id=run.id)
             second = service.publish(run.task_id, verified=True, run_id=run.id)

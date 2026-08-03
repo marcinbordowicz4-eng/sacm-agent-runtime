@@ -551,6 +551,7 @@ class Orchestrator:
                         run_id=run_id,
                     )
                 lease_service.heartbeat(task_id, owner_token)
+                assert delivery_result is not None
                 delivery_service.record(task_id, delivery_result)
                 updated = self.task_service.mark_done(
                     task_id,

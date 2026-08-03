@@ -9,6 +9,7 @@ from sacm.core.application_context_service import ApplicationContextService
 from sacm.core.context_engine_service import ContextEngineService
 from sacm.infrastructure.db.models import Task
 from sacm.schemas.application_context import ContextExpansionRequest, ContextPackageV2
+from sacm.schemas.contracts import AgentRole
 
 
 @dataclass(frozen=True)
@@ -21,7 +22,7 @@ class ContextBriefingService:
     def __init__(self, db: Session) -> None:
         self.db = db
 
-    def build(self, task: Task, *, role: str) -> ContextBriefing:
+    def build(self, task: Task, *, role: AgentRole) -> ContextBriefing:
         application = ApplicationContextService(self.db).build(task.id)
         requirements = self._requirements(task)
         changed_files = self._changed_files(task.target_repo_path)

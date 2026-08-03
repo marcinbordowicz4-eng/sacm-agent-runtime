@@ -3,7 +3,7 @@ import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
-from typing import Callable
+from typing import Callable, Literal
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
@@ -63,7 +63,7 @@ class TaskLeaseHeartbeat:
         exc_type: type[BaseException] | None,
         exc: BaseException | None,
         traceback: TracebackType | None,
-    ) -> bool:
+    ) -> Literal[False]:
         try:
             self.stop()
         except BaseException as stop_error:

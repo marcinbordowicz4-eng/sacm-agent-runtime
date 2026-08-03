@@ -1,7 +1,7 @@
 import os
 import re
 from collections import defaultdict
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
@@ -242,6 +242,11 @@ class OutcomeRouterService:
         ]
         candidates.sort(key=lambda item: (-item.score, item.agent_name))
         trusted = [item for item in candidates if item.trusted_outcomes]
+        strategy: Literal[
+            "OUTCOME_ADAPTIVE",
+            "NEURAL_FALLBACK",
+            "DETERMINISTIC_FALLBACK",
+        ]
         if trusted:
             selected = trusted[0]
             strategy = "OUTCOME_ADAPTIVE"

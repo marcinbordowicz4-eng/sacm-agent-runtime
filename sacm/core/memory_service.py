@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from sacm.core.tenancy_service import ResourceAuthorizationService
 from sacm.infrastructure.db.models import MemoryChunk, Task
 from sacm.ml.embeddings import EmbeddingService
+from sacm.schemas.memory import MemoryScope
 
 
 class MemoryService:
@@ -114,7 +115,7 @@ class MemoryService:
         query: str,
         top_k: int = 8,
         actor_id: str | None = None,
-        scopes: list[str] | None = None,
+        scopes: list[MemoryScope] | None = None,
     ) -> list[MemoryChunk]:
         task = self._authorize(task_id, actor_id, "tasks.read")
         if task is None:
@@ -172,7 +173,9 @@ class MemoryService:
             return str(task.target_repo_path)
         raise ValueError(f"Memory scope {scope!r} is unavailable for this task.")
 
-    def _scope_filters(self, task: Task, context, scopes: list[str] | None):
+    def _scope_filters(
+        self, task: Task, context, scopes: list[MemoryScope] | None
+    ):
         requested = set(scopes or ("task", "project", "repository", "organization"))
         filters = []
         for scope in requested:

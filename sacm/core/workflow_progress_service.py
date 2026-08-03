@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Literal
 
 from sqlalchemy.orm import Session
 
@@ -75,7 +76,7 @@ class WorkflowProgressService:
         task_status: str,
         progress_status: object,
         lease_active: bool,
-    ) -> str:
+    ) -> Literal["running", "stalled", "finished", "failed", "cancelled"]:
         normalized_task = task_status.lower()
         normalized_progress = str(progress_status or "").lower()
         if normalized_progress == "cancelled" or normalized_task == "cancelled":

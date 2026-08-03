@@ -4,7 +4,7 @@ Revision ID: b5e9a3d7f2c4
 Revises: a4d8f2c6e1b3
 """
 
-from typing import Sequence, Union
+from typing import Any, Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
@@ -23,7 +23,7 @@ def upgrade() -> None:
         column["name"]
         for column in sa.inspect(connection).get_columns("memory_chunks")
     }
-    additions = {
+    additions: dict[str, sa.Column[Any]] = {
         "scope": sa.Column("scope", sa.String(), nullable=True),
         "scope_key": sa.Column("scope_key", sa.String(), nullable=True),
         "content_hash": sa.Column("content_hash", sa.String(), nullable=True),
@@ -70,7 +70,7 @@ def upgrade() -> None:
     existing_indexes = {
         item["name"] for item in sa.inspect(connection).get_indexes("memory_chunks")
     }
-    for column in (
+    for index_column in (
         "scope",
         "scope_key",
         "content_hash",
@@ -78,9 +78,9 @@ def upgrade() -> None:
         "supersedes_id",
         "superseded_at",
     ):
-        index_name = f"ix_memory_chunks_{column}"
+        index_name = f"ix_memory_chunks_{index_column}"
         if index_name not in existing_indexes:
-            op.create_index(index_name, "memory_chunks", [column])
+            op.create_index(index_name, "memory_chunks", [index_column])
 
 
 def downgrade() -> None:

@@ -42,7 +42,11 @@ class CodexExecutorAdapter:
                 timeout=1_200,
                 environment=dependency_environment,
             )
-        if dependency_setup and dependency_setup["returncode"] != 0:
+        if (
+            dependency_cache is not None
+            and dependency_setup
+            and dependency_setup["returncode"] != 0
+        ):
             return {
                 "executor": executor,
                 "provider": provider,
