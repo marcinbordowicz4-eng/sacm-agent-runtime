@@ -25,7 +25,10 @@ COPY pyproject.toml README.md ./
 COPY sacm ./sacm
 COPY apps ./apps
 COPY cli ./cli
-RUN pip install --no-cache-dir -e ".[auth,mlflow,temporal]" \
+RUN pip install --no-cache-dir \
+      --index-url https://download.pytorch.org/whl/cpu \
+      "torch==2.5.1+cpu" \
+    && pip install --no-cache-dir -e ".[auth,mlflow,temporal]" \
     && pip install --no-cache-dir --upgrade \
       "setuptools>=83.0.0" \
       "wheel>=0.46.2" \
