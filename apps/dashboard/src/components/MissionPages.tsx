@@ -2,6 +2,7 @@ import type { FormEvent } from 'react'
 import { date, json, metric, money, record, text } from '../formatters'
 import type {
   DashboardProps,
+  ExpertBenchmarkAssessment,
   OutcomeAgent,
   Run,
   RunAnalytics,
@@ -431,13 +432,28 @@ export function PassportsPage(props: DashboardProps) {
 export function BenchmarksPage(props: DashboardProps) {
   const agents = agentLeaderboard(props.portfolioAnalytics)
   const benchmarked = agents.filter((agent) => agent.benchmarkStatus !== 'NOT_RUN')
+  const assessment = props.expertBenchmarkAssessment
   return <>
     <PageHeader eyebrow="EVALUATION" title="Benchmarks" description="Benchmark results are shown only when attached to authorized agent analytics; outcome history is not relabeled as benchmark data." />
     <section className="benchmark-summary"><div><span>Agent configurations</span><strong>{agents.length}</strong></div><div><span>Measured benchmarks</span><strong>{benchmarked.length}</strong></div><div><span>Not run</span><strong>{agents.length - benchmarked.length}</strong></div></section>
     <article className="surface">
       {agents.length ? <div className="benchmark-cards">{agents.map((agent) => <article key={agent.key}><div><b>{agent.name}</b><small>{agent.provider} / {agent.model}</small></div><Status value={agent.benchmarkStatus} /><p>{agent.benchmarkValue}</p><small>Outcome sample: {agent.samples} invocation{agent.samples === 1 ? '' : 's'}</small></article>)}</div> : <MissingData text="No agent configurations are available to benchmark." />}
     </article>
+    <ExpertAssessmentTable assessment={assessment} />
   </>
+}
+
+function ExpertAssessmentTable({ assessment }: { assessment?: ExpertBenchmarkAssessment }) {
+  if (!assessment) {
+    return <article className="surface"><MissingData text="No expert assessment has been saved." /></article>
+  }
+  return <article className="surface table-surface">
+    <div className="section-head"><div><p className="eyebrow">EXPERT ASSESSMENT · NOT A BENCHMARK</p><h2>Public capability assessment</h2><p>{assessment.disclaimer}</p></div><Status value="EXPERT OPINION" /></div>
+    <div className="table-wrap"><table><thead><tr><th>Product</th><th>Autonomous coding</th><th>Governance</th><th>Vendor-neutral</th><th>Evidence / audit</th><th>UX / maturity</th><th>Overall</th></tr></thead><tbody>{assessment.products.map((product) =>
+      <tr key={product.name}><td><b>{product.name}</b></td><td>{product.autonomous_coding.toFixed(1)}</td><td>{product.governance.toFixed(1)}</td><td>{product.vendor_neutral.toFixed(1)}</td><td>{product.evidence_audit.toFixed(1)}</td><td>{product.ux_maturity.toFixed(1)}</td><td><b>{product.overall.toFixed(1)}</b></td></tr>
+    )}</tbody></table></div>
+    <small>As of {assessment.as_of} · saved {date(assessment.updated_at)} · source: expert opinion</small>
+  </article>
 }
 
 export function SecurityPage(props: DashboardProps) {

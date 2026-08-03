@@ -9,6 +9,7 @@ import type {
   Client,
   Evidence,
   EvidenceVerification,
+  ExpertBenchmarkAssessment,
   Event,
   ExecutionJob,
   ExecutorFleetHealth,
@@ -52,6 +53,7 @@ function DashboardApp() {
   const [evidenceManifest, setEvidenceManifest] = useState<Record<string, unknown>>()
   const [evidenceVerification, setEvidenceVerification] = useState<EvidenceVerification>()
   const [lifecycleMetrics, setLifecycleMetrics] = useState<LifecycleMetrics>()
+  const [expertBenchmarkAssessment, setExpertBenchmarkAssessment] = useState<ExpertBenchmarkAssessment>()
   const [progress, setProgress] = useState<WorkflowProgress>()
   const [progressError, setProgressError] = useState('')
   const [error, setError] = useState('')
@@ -135,8 +137,12 @@ function DashboardApp() {
     setLoading(true)
     setError('')
     try {
-      const nextRuns = await request<Run[]>('/v1/runs')
+      const [nextRuns, nextExpertBenchmarkAssessment] = await Promise.all([
+        request<Run[]>('/v1/runs'),
+        optional<ExpertBenchmarkAssessment>('/v1/benchmarks/expert-assessment'),
+      ])
       setRuns(nextRuns)
+      setExpertBenchmarkAssessment(nextExpertBenchmarkAssessment)
       const analyticsResults = await Promise.all(nextRuns.map((run) => optional<RunAnalytics>(`/v1/runs/${run.id}/analytics`)))
       setPortfolioAnalytics(analyticsResults.filter((item): item is RunAnalytics => item !== undefined))
       const current = selected && nextRuns.find((run) => run.id === selected.id)
@@ -252,6 +258,7 @@ function DashboardApp() {
     evidenceManifest={evidenceManifest}
     evidenceVerification={evidenceVerification}
     lifecycleMetrics={lifecycleMetrics}
+    expertBenchmarkAssessment={expertBenchmarkAssessment}
     progress={progress}
     progressError={progressError}
     error={error}

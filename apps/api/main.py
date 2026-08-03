@@ -9,6 +9,7 @@ from apps.api.routes import (
     analytics,
     application_context,
     approvals,
+    benchmarks,
     context,
     execution_plan,
     execution_plane,
@@ -158,6 +159,12 @@ app.include_router(
     analytics.router,
     prefix="/v1",
     tags=["analytics"],
+    dependencies=authenticated_dependencies,
+)
+app.include_router(
+    benchmarks.router,
+    prefix="/v1",
+    tags=["benchmarks"],
     dependencies=authenticated_dependencies,
 )
 app.include_router(execution_plane.router, prefix="/v1", tags=["execution-plane"])

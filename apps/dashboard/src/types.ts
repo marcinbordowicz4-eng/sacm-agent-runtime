@@ -499,6 +499,24 @@ export type LifecycleMetrics = {
   } | null
 }
 
+export type ExpertBenchmarkAssessment = {
+  schema_version: 'expert-benchmark-assessment/v1'
+  assessment_type: 'expert_opinion'
+  disclaimer: string
+  as_of: string
+  updated_at?: string | null
+  updated_by?: string | null
+  products: {
+    name: string
+    autonomous_coding: number
+    governance: number
+    vendor_neutral: number
+    evidence_audit: number
+    ux_maturity: number
+    overall: number
+  }[]
+}
+
 export type DashboardProps = {
   baseUrl: string
   setBaseUrl: Dispatch<SetStateAction<string>>
@@ -529,6 +547,7 @@ export type DashboardProps = {
   evidenceManifest?: Record<string, unknown>
   evidenceVerification?: EvidenceVerification
   lifecycleMetrics?: LifecycleMetrics
+  expertBenchmarkAssessment?: ExpertBenchmarkAssessment
   progress?: WorkflowProgress
   progressError: string
   error: string
