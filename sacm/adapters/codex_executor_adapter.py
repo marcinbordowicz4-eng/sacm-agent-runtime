@@ -3,6 +3,7 @@ import os
 import re
 import selectors
 import shlex
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -346,6 +347,7 @@ class CodexExecutorAdapter:
                 text=True,
                 bufsize=1,
                 env=env,
+                start_new_session=True,
             )
         except FileNotFoundError:
             return {
@@ -369,7 +371,10 @@ class CodexExecutorAdapter:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 timed_out = True
-                process.kill()
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
                 remaining = 1.0
             for key, _ in streams.select(remaining):
                 line = key.fileobj.readline()
