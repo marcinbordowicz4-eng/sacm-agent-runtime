@@ -37,6 +37,8 @@ RUN pip install --no-cache-dir \
 RUN addgroup --system sacm && adduser --system --ingroup sacm sacm
 COPY --chown=sacm:sacm . .
 RUN chown -R sacm:sacm /app
+RUN mkdir -p /app/.sacm/evidence /app/.sacm/state /app/.sacm/gh /app/.sacm/codex \
+    && chown -R sacm:sacm /app/.sacm
 RUN chmod 0755 /app/docker-entrypoint.sh
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
