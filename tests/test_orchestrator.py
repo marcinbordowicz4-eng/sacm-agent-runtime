@@ -51,6 +51,14 @@ def test_orchestrator_uses_deterministic_agents_for_workflow_phases():
     assert Orchestrator._phase_agent_name("reviewing") == "Reviewer"
 
 
+def test_orchestrator_allows_phase_agent_outside_router_candidates():
+    from sacm.core.orchestrator import Orchestrator
+
+    candidates = [SimpleNamespace(agent_name="GitHubDelivery", score=0.9)]
+
+    assert Orchestrator._candidate_score(candidates, "CodexExecutor") is None
+
+
 def test_orchestrator_does_not_accept_unverified_done_hint():
     from sacm.core.orchestrator import Orchestrator
 

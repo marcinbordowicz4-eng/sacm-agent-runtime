@@ -275,10 +275,8 @@ class Orchestrator:
                     "selected_agent": selected_agent.name,
                     "selected_agent_index": executed_agent_index,
                     "router_strategy": outcome_decision.strategy,
-                    "router_score": next(
-                        candidate.score
-                        for candidate in outcome_decision.candidates
-                        if candidate.agent_name == selected_agent.name
+                    "router_score": self._candidate_score(
+                        outcome_decision.candidates, selected_agent.name
                     ),
                 },
             )
@@ -750,6 +748,17 @@ class Orchestrator:
                 "elapsed_ms": int((time.monotonic() - started_at) * 1_000),
                 **details,
             },
+        )
+
+    @staticmethod
+    def _candidate_score(candidates, agent_name: str) -> float | None:
+        return next(
+            (
+                candidate.score
+                for candidate in candidates
+                if candidate.agent_name == agent_name
+            ),
+            None,
         )
 
     @staticmethod
