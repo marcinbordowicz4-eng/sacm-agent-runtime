@@ -262,7 +262,11 @@ def test_legacy_backfill_is_idempotent_and_preserves_executor_scope(db):
     memory = MemoryChunk(
         task_id=run.task_id,
         source_type="legacy",
+        scope="task",
+        scope_key=run.task_id,
         content="legacy memory",
+        content_hash="legacy-memory-hash",
+        confidence=0.7,
     )
     executor = _executor(
         project_a.id, f"project:{project_a.id}", "legacy-executor"

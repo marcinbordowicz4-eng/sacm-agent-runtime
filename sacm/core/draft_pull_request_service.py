@@ -41,12 +41,12 @@ class DraftPullRequestService:
         }
         if not verified:
             return {**base, "status": "skipped", "reason": "unverified"}
-        if os.getenv("SACM_AUTO_DRAFT_PR", "true").lower() != "true":
+        if not self._delivery_enabled():
             return {**base, "status": "skipped", "reason": "disabled"}
         task = self.db.get(Task, task_id)
         if task is None:
             raise ValueError("Task not found.")
-        target = self._task_branch(task_id)
+        target = self._task_branch(task_id, run_id=run_id)
         if target is None:
             return {**base, "status": "skipped", "reason": "no_task_branch"}
         try:
@@ -83,8 +83,32 @@ class DraftPullRequestService:
             "github_draft_pr_delivery",
             result,
         )
+        from sacm.core.lifecycle_metric_service import LifecycleMetricService
 
-    def _task_branch(self, task_id: str) -> TaskBranch | None:
+        LifecycleMetricService(self.db).record(
+            "delivery.draft_pr",
+            task_id=task_id,
+            run_id=result.get("run_id"),
+            details={
+                key: result.get(key)
+                for key in ("status", "outcome", "reason", "draft")
+                if result.get(key) is not None
+            },
+        )
+
+    @staticmethod
+    def _delivery_enabled() -> bool:
+        configured = os.getenv("SACM_AUTO_DRAFT_PR")
+        if configured is None:
+            configured = os.getenv("SACM_CODEX_AUTO_CREATE_PR")
+        return str(configured or "true").lower() == "true"
+
+    def _task_branch(
+        self,
+        task_id: str,
+        *,
+        run_id: str | None = None,
+    ) -> TaskBranch | None:
         events = (
             self.db.query(ContextEvent)
             .filter(
@@ -96,6 +120,12 @@ class DraftPullRequestService:
             .all()
         )
         for event in events:
+            event_run_id = event.payload.get("run_id")
+            contract = event.payload.get("agent_task_contract")
+            if event_run_id is None and isinstance(contract, dict):
+                event_run_id = contract.get("run_id")
+            if run_id is not None and event_run_id != run_id:
+                continue
             actions = event.payload.get("actions")
             if not isinstance(actions, list):
                 continue

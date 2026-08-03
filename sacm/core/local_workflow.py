@@ -7,6 +7,7 @@ from sacm.core.orchestrator import Orchestrator
 from sacm.core.recovery_service import RecoveryService
 from sacm.core.run_service import RunService
 from sacm.infrastructure.db.models import EvidencePack
+from sacm.schemas.recovery import RecoveryAction
 
 
 class LocalWorkflow:
@@ -79,12 +80,26 @@ class LocalWorkflow:
                 current_run = self.runs.get(run_id)
                 if current_run is None:
                     raise ValueError(f"Run {run_id} disappeared during execution")
-                if current_run.cancellation_requested or current_run.status == "CANCELLED":
+                if (
+                    current_run.cancellation_requested
+                    or current_run.status == "CANCELLED"
+                ):
+                    self.runs.interrupt_step(
+                        run_id,
+                        step.id,
+                        reason="Run was cancelled while the orchestrator was executing.",
+                        cancelled=True,
+                    )
                     return {"run_id": run_id, "status": current_run.status}
                 if (
                     current_run.status != expected_run_status
                     or current_run.updated_at != expected_run_updated_at
                 ):
+                    self.runs.interrupt_step(
+                        run_id,
+                        step.id,
+                        reason="The run changed while the orchestrator was executing.",
+                    )
                     return {
                         "run_id": run_id,
                         "status": current_run.status,
@@ -92,6 +107,27 @@ class LocalWorkflow:
                         "stale_result_ignored": True,
                     }
                 if output["status"] != "done":
+                    recovery = output.get("recovery") or {}
+                    decision_payload = recovery.get("decision") or {}
+                    if decision_payload.get("status") == "ESCALATED":
+                        failure = recovery.get("failure") or {
+                            "type": "TaskRecoveryEscalated",
+                            "message": "Task-level autonomous recovery escalated.",
+                            "retryable": False,
+                        }
+                        self.runs.fail_step(run_id, step.id, failure)
+                        step, _, decision = RecoveryService(self.db).handle(
+                            run_id,
+                            step.id,
+                            failure,
+                            requested_action=RecoveryAction.ESCALATE,
+                        )
+                        return {
+                            "run_id": run_id,
+                            "status": "FAILED",
+                            "error": failure["message"],
+                            "recovery": decision.model_dump(mode="json"),
+                        }
                     raise RuntimeError(
                         "The orchestrator did not produce a verified completed task."
                     )
@@ -171,9 +207,28 @@ class LocalWorkflow:
                 if (
                     current_run.cancellation_requested
                     or current_run.status == "CANCELLED"
-                    or current_run.status != expected_run_status
+                ):
+                    self.runs.interrupt_step(
+                        run_id,
+                        step.id,
+                        reason="Run was cancelled while the orchestrator was executing.",
+                        cancelled=True,
+                    )
+                    return {
+                        "run_id": run_id,
+                        "status": current_run.status,
+                        "error": str(exc),
+                        "stale_result_ignored": True,
+                    }
+                if (
+                    current_run.status != expected_run_status
                     or current_run.updated_at != expected_run_updated_at
                 ):
+                    self.runs.interrupt_step(
+                        run_id,
+                        step.id,
+                        reason="The run changed while the orchestrator was executing.",
+                    )
                     return {
                         "run_id": run_id,
                         "status": current_run.status,

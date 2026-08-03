@@ -25,6 +25,7 @@ def test_compile_returns_agent_context():
     assert ctx.task_id == "task-1"
     assert "Fix the failing test" in ctx.task
     assert ctx.current_state == "debugging"
+    assert ctx.goal == "Complete task: Fix the failing test"
 
 
 def test_compile_includes_memory():

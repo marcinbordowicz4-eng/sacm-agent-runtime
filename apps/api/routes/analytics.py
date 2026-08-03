@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from sacm.core.analytics_service import AnalyticsNotFoundError, AnalyticsService
 from sacm.core.auth_service import production_mode, require_authenticated_actor
+from sacm.core.lifecycle_metric_service import LifecycleMetricService
 from sacm.core.tenancy_service import AuthorizationError, TenancyService
 from sacm.infrastructure.db.models import Organization, Project, Run, Task
 from sacm.infrastructure.db.session import get_db
@@ -56,6 +57,16 @@ def get_run_analytics(
         return AnalyticsService(db).recompute_run(run_id)
     except AnalyticsNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/runs/{run_id}/lifecycle-metrics")
+def get_run_lifecycle_metrics(
+    run_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> dict:
+    _authorize_run(db, run_id, actor)
+    return LifecycleMetricService(db).summary(run_id)
 
 
 @router.get(

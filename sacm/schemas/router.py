@@ -34,6 +34,7 @@ class RouterCandidateV1(BaseModel):
     score: float
     trusted_outcomes: bool
     data_scope: Literal["project", "task_tags", "global", "none"]
+    capability_match: float = Field(default=0.0, ge=0, le=1)
     reasons: list[str] = Field(default_factory=list)
 
 
@@ -42,11 +43,16 @@ class RouterDecisionV1(BaseModel):
     task_id: str
     selected_agent_name: str
     selected_agent_index: int = Field(ge=0)
-    strategy: Literal["OUTCOME_ADAPTIVE", "NEURAL_FALLBACK"]
+    strategy: Literal[
+        "OUTCOME_ADAPTIVE",
+        "NEURAL_FALLBACK",
+        "DETERMINISTIC_FALLBACK",
+    ]
     minimum_samples: int = Field(ge=1)
     role: AgentRole | None = None
     risk_level: str | None = None
     task_tags: list[str] = Field(default_factory=list)
+    task_type: str = "general"
     fallback_reason: str | None = None
     candidates: list[RouterCandidateV1]
     outcome_semantics: str = (

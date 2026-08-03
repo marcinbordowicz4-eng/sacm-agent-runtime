@@ -53,6 +53,18 @@ Missing configuration produces explicit `NOT_RUN`; a missing enrolled executor
 or executable produces `BLOCKED`. Neither is counted as an attempt. Simulated
 outputs are invalid.
 
+## Deterministic resilience benchmark
+
+Runtime infrastructure can be checked without model calls:
+
+```bash
+sacm benchmark resilience --output resilience-benchmark.json
+```
+
+This exercises exclusive queue claims, lease-expiry recovery, cancellation,
+infrastructure fallback, safe patch policy, and idempotent draft delivery. It
+measures runtime control-plane behavior only and does not replace Benchmark 100.
+
 ## Evidence and validity
 
 Report v2 records provider/model/version, agent/runtime version, Git/OS/tool

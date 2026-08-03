@@ -18,6 +18,7 @@ from sacm.core.tenancy_service import (
     TenancyService,
 )
 from sacm.core.workflow_backend import workflow_backend
+from sacm.core.workflow_queue_service import WorkflowQueueService
 from sacm.infrastructure.db.models import ContextEvent, EvidencePack
 from sacm.infrastructure.db.session import get_db
 from sacm.schemas.contracts import (
@@ -412,7 +413,7 @@ def list_events(
     ]
 
 
-@router.post("/{run_id}/execute")
+@router.post("/{run_id}/execute", status_code=202)
 def execute_run(
     run_id: str,
     actor: str = Depends(require_authenticated_actor),
@@ -433,7 +434,9 @@ def cancel_run(
 ) -> RunRead:
     try:
         _authorize_run(db, run_id, actor, "runs.execute")
-        return RunRead.model_validate(RunService(db).cancel(run_id))
+        run = RunService(db).cancel(run_id)
+        WorkflowQueueService(db).cancel(run_id)
+        return RunRead.model_validate(run)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -448,6 +451,24 @@ def resume_run(
         _authorize_run(db, run_id, actor, "runs.execute")
         return RunRead.model_validate(RunService(db).resume(run_id))
     except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/{run_id}/retry", status_code=202)
+def retry_run(
+    run_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> dict:
+    try:
+        _authorize_run(db, run_id, actor, "runs.execute")
+        run = RunService(db).get(run_id)
+        if run is None:
+            raise ValueError("Run not found")
+        if run.status == "FAILED":
+            RunService(db).resume(run_id)
+        return workflow_backend(db).execute(run_id)
+    except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 

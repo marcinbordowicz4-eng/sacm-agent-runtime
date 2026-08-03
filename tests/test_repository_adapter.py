@@ -6,6 +6,7 @@ import pytest
 from sacm.adapters.repository_adapter import (
     RepositoryAdapter,
     RepositoryOperationError,
+    RepositoryPathError,
 )
 
 
@@ -273,3 +274,101 @@ def test_run_command_does_not_invoke_a_shell(temp_repo, monkeypatch):
     assert result["returncode"] == 0
     assert captured["arguments"] == ["echo", "safe; text"]
     assert "shell" not in captured["kwargs"]
+
+
+def _git_repository(path: Path) -> Path:
+    path.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=path, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
+    (path / "app.py").write_text("old\n")
+    subprocess.run(["git", "add", "app.py"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-qm", "initial"], cwd=path, check=True)
+    return path
+
+
+def test_apply_patch_runs_preflight_and_returns_integrity_metadata(tmp_path):
+    repository = _git_repository(tmp_path / "repository")
+    (repository / "app.py").write_text("new\n")
+    patch = subprocess.run(
+        ["git", "diff"],
+        cwd=repository,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    subprocess.run(["git", "checkout", "--", "app.py"], cwd=repository, check=True)
+
+    result = RepositoryAdapter(str(repository)).apply_patch(patch)
+
+    assert (repository / "app.py").read_text() == "new\n"
+    assert result["changed_files"] == ["app.py"]
+    assert len(result["patch_sha256"]) == 64
+
+
+def test_apply_patch_rejects_protected_and_escaping_paths(tmp_path):
+    repository = _git_repository(tmp_path / "repository")
+    adapter = RepositoryAdapter(str(repository))
+
+    protected = (
+        "diff --git a/.env b/.env\n"
+        "new file mode 100644\n"
+        "--- /dev/null\n"
+        "+++ b/.env\n"
+        "@@ -0,0 +1 @@\n"
+        "+SECRET=value\n"
+    )
+    escaping = (
+        "diff --git a/../outside b/../outside\n"
+        "--- a/../outside\n"
+        "+++ b/../outside\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+
+    with pytest.raises(RepositoryPathError, match="protected"):
+        adapter.apply_patch(protected)
+    with pytest.raises(RepositoryPathError, match="Unsafe patch path"):
+        adapter.apply_patch(escaping)
+
+
+def test_apply_patch_enforces_size_limit(tmp_path, monkeypatch):
+    repository = _git_repository(tmp_path / "repository")
+    monkeypatch.setenv("SACM_PATCH_MAX_BYTES", "20")
+
+    with pytest.raises(RepositoryOperationError, match="MAX_BYTES"):
+        RepositoryAdapter(str(repository)).apply_patch(
+            "diff --git a/app.py b/app.py\n"
+        )
+
+
+def test_apply_patch_rolls_back_files_when_apply_fails(tmp_path, monkeypatch):
+    repository = _git_repository(tmp_path / "repository")
+    adapter = RepositoryAdapter(str(repository))
+    patch = (
+        "diff --git a/app.py b/app.py\n"
+        "--- a/app.py\n"
+        "+++ b/app.py\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+    calls = 0
+
+    def fake_apply(value, arguments):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(arguments, 0, "", "")
+        (repository / "app.py").write_text("partially changed\n")
+        return subprocess.CompletedProcess(arguments, 1, "", "simulated failure")
+
+    monkeypatch.setattr(adapter, "_run_git_apply", fake_apply)
+
+    with pytest.raises(RepositoryOperationError, match="simulated failure"):
+        adapter.apply_patch(patch)
+
+    assert (repository / "app.py").read_text() == "old\n"

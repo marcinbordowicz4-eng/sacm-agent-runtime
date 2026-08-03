@@ -14,6 +14,9 @@ services:
       SACM_OPA_URL: http://opa:8181
       SACM_OPA_FAIL_CLOSED: "true"
       SACM_WORKFLOW_BACKEND: ${SACM_WORKFLOW_BACKEND:-local}
+      SACM_MAX_AGENT_STEPS: ${SACM_MAX_AGENT_STEPS:-30}
+      SACM_CONTEXT_AGENT_MAX_STEPS: ${SACM_CONTEXT_AGENT_MAX_STEPS:-12}
+      SACM_CODE_EXECUTOR: ${SACM_CODE_EXECUTOR:-copilot}
       SACM_TEMPORAL_ADDRESS: temporal:7233
       SACM_TEMPORAL_NAMESPACE: default
       SACM_TEMPORAL_TASK_QUEUE: sacm-runs
@@ -21,6 +24,9 @@ services:
       SACM_REPOSITORY_ROOT: ${SACM_CONTAINER_REPOSITORY_ROOT:-/repositories}
       SACM_WORKTREE_ROOT: ${SACM_CONTAINER_WORKTREE_ROOT:-/worktrees}
       SACM_STATE_ROOT: /app/.sacm/state
+      GH_CONFIG_DIR: /app/.sacm/state/gh
+      CODEX_HOME: /app/.sacm/state/codex
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy

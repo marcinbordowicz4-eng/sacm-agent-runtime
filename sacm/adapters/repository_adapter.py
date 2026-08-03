@@ -1,7 +1,9 @@
+import fnmatch
 import hashlib
 import os
 import re
 import shlex
+import stat
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +16,13 @@ class DependencyCache:
     cache_path: Path
     environment: dict[str, str]
     install_command: list[str]
+
+
+@dataclass(frozen=True)
+class PatchFileState:
+    path: Path
+    content: bytes | None
+    mode: int | None
 
 
 class RepositoryError(Exception):
@@ -270,10 +279,38 @@ class RepositoryAdapter:
         result = self._git(["diff"], check=False)
         return result.stdout
 
-    def apply_patch(self, patch: str) -> None:
+    def apply_patch(self, patch: str) -> dict[str, object]:
+        paths = self._validate_patch(patch)
+        states = self._snapshot_patch_files(paths)
+        check = self._run_git_apply(
+            patch,
+            ["apply", "--check", "--whitespace=error-all", "-"],
+        )
+        if check.returncode != 0:
+            raise RepositoryOperationError(
+                f"Patch preflight failed: {check.stderr.strip()}"
+            )
+        proc = self._run_git_apply(patch, ["apply", "--whitespace=error-all", "-"])
+        if proc.returncode == 0:
+            return {
+                "status": "applied",
+                "changed_files": sorted(paths),
+                "patch_sha256": hashlib.sha256(patch.encode("utf-8")).hexdigest(),
+            }
+        rollback_error = self._restore_patch_files(states)
+        detail = proc.stderr.strip() or proc.stdout.strip() or "unknown Git error"
+        if rollback_error:
+            detail += f"; rollback failed: {rollback_error}"
+        raise RepositoryOperationError(f"Failed to apply patch: {detail}")
+
+    def _run_git_apply(
+        self,
+        patch: str,
+        arguments: list[str],
+    ) -> subprocess.CompletedProcess[str]:
         try:
-            proc = subprocess.run(
-                ["git", "apply", "-"],
+            return subprocess.run(
+                ["git", *arguments],
                 input=patch,
                 cwd=self.repo_path,
                 capture_output=True,
@@ -284,10 +321,105 @@ class RepositoryAdapter:
             raise RepositoryOperationError(
                 "Git executable is unavailable in the SACM runtime image."
             ) from exc
-        if proc.returncode != 0:
+
+    def _validate_patch(self, patch: str) -> set[str]:
+        encoded = patch.encode("utf-8")
+        max_bytes = int(os.getenv("SACM_PATCH_MAX_BYTES", "1048576"))
+        max_files = int(os.getenv("SACM_PATCH_MAX_FILES", "100"))
+        if not patch.strip():
+            raise RepositoryOperationError("Patch must not be empty.")
+        if len(encoded) > max_bytes:
             raise RepositoryOperationError(
-                f"Failed to apply patch: {proc.stderr.strip()}"
+                f"Patch exceeds SACM_PATCH_MAX_BYTES ({max_bytes})."
             )
+        if "\x00" in patch:
+            raise RepositoryOperationError("Patch must not contain NUL bytes.")
+        if re.search(r"^(?:new file mode|old mode) 120000$", patch, re.MULTILINE):
+            raise RepositoryOperationError("Patches may not create or modify symlinks.")
+
+        paths: set[str] = set()
+        for match in re.finditer(
+            r"^diff --git a/(.+?) b/(.+?)$",
+            patch,
+            re.MULTILINE,
+        ):
+            paths.update(match.groups())
+        if not paths:
+            raise RepositoryOperationError(
+                "Patch must contain at least one standard `diff --git` header."
+            )
+        if len(paths) > max_files:
+            raise RepositoryOperationError(
+                f"Patch exceeds SACM_PATCH_MAX_FILES ({max_files})."
+            )
+        for path in paths:
+            self._validate_patch_path(path)
+        return paths
+
+    def _validate_patch_path(self, path: str) -> None:
+        candidate = Path(path)
+        if (
+            not path
+            or candidate.is_absolute()
+            or ".." in candidate.parts
+            or ".git" in candidate.parts
+        ):
+            raise RepositoryPathError(f"Unsafe patch path: {path!r}")
+        resolved = (self.repo_path / candidate).resolve()
+        if self.repo_path != resolved and self.repo_path not in resolved.parents:
+            raise RepositoryPathError(f"Patch path escapes repository: {path!r}")
+        denied = [
+            item.strip()
+            for item in os.getenv(
+                "SACM_PATCH_DENIED_GLOBS",
+                ".env,.env.*,*.pem,*.key,*.p12,*.pfx,*.mobileprovision,"
+                "**/id_rsa*,**/generated/*.pdf",
+            ).split(",")
+            if item.strip()
+        ]
+        if any(fnmatch.fnmatch(path, pattern) for pattern in denied):
+            raise RepositoryPathError(f"Patch path is protected by policy: {path!r}")
+        if resolved.is_symlink():
+            raise RepositoryPathError(
+                f"Patch may not modify an existing symlink: {path!r}"
+            )
+
+    def _snapshot_patch_files(self, paths: set[str]) -> list[PatchFileState]:
+        states: list[PatchFileState] = []
+        for path in sorted(paths):
+            target = self.repo_path / path
+            if target.exists():
+                if not target.is_file():
+                    raise RepositoryPathError(
+                        f"Patch target must be a regular file: {path!r}"
+                    )
+                states.append(
+                    PatchFileState(
+                        path=target,
+                        content=target.read_bytes(),
+                        mode=stat.S_IMODE(target.stat().st_mode),
+                    )
+                )
+            else:
+                states.append(PatchFileState(path=target, content=None, mode=None))
+        return states
+
+    @staticmethod
+    def _restore_patch_files(states: list[PatchFileState]) -> str | None:
+        errors: list[str] = []
+        for state in states:
+            try:
+                if state.content is None:
+                    if state.path.exists() or state.path.is_symlink():
+                        state.path.unlink()
+                    continue
+                state.path.parent.mkdir(parents=True, exist_ok=True)
+                state.path.write_bytes(state.content)
+                if state.mode is not None:
+                    state.path.chmod(state.mode)
+            except OSError as exc:
+                errors.append(f"{state.path}: {exc}")
+        return "; ".join(errors) or None
 
     def run_command(self, command: str) -> dict:
         arguments = shlex.split(command)

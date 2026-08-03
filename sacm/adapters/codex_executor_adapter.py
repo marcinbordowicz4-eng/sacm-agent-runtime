@@ -26,6 +26,8 @@ class CodexExecutorAdapter:
         prompt: str,
         verification_commands: list[str],
     ) -> dict[str, Any]:
+        executor = os.getenv("SACM_CODE_EXECUTOR", "codex")
+        provider = "copilot" if executor == "copilot" else "codex"
         branch_name = self._branch_name(task_id)
         worktree_path = self.repository.create_worktree(branch_name)
         dependency_cache = self.repository.dependency_cache(worktree_path)
@@ -42,6 +44,8 @@ class CodexExecutorAdapter:
             )
         if dependency_setup and dependency_setup["returncode"] != 0:
             return {
+                "executor": executor,
+                "provider": provider,
                 "branch_name": branch_name,
                 "worktree_path": worktree_path,
                 "codex": dependency_setup,
@@ -55,8 +59,23 @@ class CodexExecutorAdapter:
                 },
                 "dependency_setup": dependency_setup,
             }
+        command = (
+            [
+                "copilot",
+                "--prompt",
+                prompt,
+                "--allow-all",
+                "--no-ask-user",
+                "--no-auto-update",
+                "--no-remote",
+                "--output-format",
+                "json",
+            ]
+            if executor == "copilot"
+            else ["codex", "exec", "--full-auto", "--json", prompt]
+        )
         codex = self._run(
-            ["codex", "exec", "--full-auto", "--json", prompt],
+            command,
             worktree_path,
             timeout=1_800,
             environment=dependency_environment,
@@ -72,8 +91,10 @@ class CodexExecutorAdapter:
             for command in verification_commands
             if command
         ]
-        usage = self._usage_from_events(codex["events"])
+        usage = self._usage_from_events(codex["events"], provider=provider)
         return {
+            "executor": executor,
+            "provider": provider,
             "branch_name": branch_name,
             "worktree_path": worktree_path,
             "codex": codex,
@@ -227,7 +248,11 @@ class CodexExecutorAdapter:
         return events
 
     @staticmethod
-    def _usage_from_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _usage_from_events(
+        events: list[dict[str, Any]],
+        *,
+        provider: str = "codex",
+    ) -> list[dict[str, Any]]:
         usage_records: list[dict[str, Any]] = []
         for event in events:
             data = event.get("data")
@@ -243,7 +268,7 @@ class CodexExecutorAdapter:
             model = event.get("model") or data.get("model") or "unknown"
             usage_records.append(
                 {
-                    "provider": "codex",
+                    "provider": provider,
                     "model": str(model),
                     "operation": "code_execution",
                     "input_tokens": input_tokens,

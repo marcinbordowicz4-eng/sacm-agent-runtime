@@ -115,6 +115,40 @@ def test_codex_executor_prepares_independent_dependencies(monkeypatch, tmp_path)
     assert result["dependency_cache"]["prepared"] is True
 
 
+def test_codex_executor_preserves_configurable_copilot_execution(
+    monkeypatch, tmp_path
+):
+    adapter = CodexExecutorAdapter(str(tmp_path))
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    calls = []
+    monkeypatch.setenv("SACM_CODE_EXECUTOR", "copilot")
+    monkeypatch.setattr(
+        adapter.repository, "create_worktree", lambda branch: str(worktree)
+    )
+    monkeypatch.setattr(adapter.repository, "dependency_cache", lambda path: None)
+    monkeypatch.setattr(
+        "sacm.adapters.codex_executor_adapter.RepositoryAdapter.get_diff",
+        lambda self: "",
+    )
+
+    def fake_run(command, cwd, timeout, **kwargs):
+        calls.append(command)
+        return {
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+            "events": [],
+            "duration_ms": 1,
+        }
+
+    monkeypatch.setattr(adapter, "_run", fake_run)
+
+    adapter.execute("task-1", "implement", [])
+
+    assert calls[0][:2] == ["copilot", "--prompt"]
+
+
 def test_codex_verification_retries_resource_failure_in_band(monkeypatch, tmp_path):
     adapter = CodexExecutorAdapter(str(tmp_path))
     results = iter(
@@ -171,6 +205,15 @@ def test_codex_executor_extracts_only_provider_reported_usage():
             "output_tokens": 4,
         }
     ]
+
+
+def test_code_executor_usage_preserves_selected_provider():
+    usage = CodexExecutorAdapter._usage_from_events(
+        [{"usage": {"input_tokens": 10, "output_tokens": 4}, "model": "x"}],
+        provider="copilot",
+    )
+
+    assert usage[0]["provider"] == "copilot"
 
 
 def test_codex_executor_agent_requires_target_repository():

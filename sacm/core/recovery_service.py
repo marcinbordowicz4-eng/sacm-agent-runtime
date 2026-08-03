@@ -69,6 +69,20 @@ class RecoveryService:
             decision.model_dump(mode="json"),
             commit=commit,
         )
+        if commit:
+            from sacm.core.lifecycle_metric_service import LifecycleMetricService
+
+            LifecycleMetricService(self.db).record(
+                "workflow.recovery_decision",
+                run_id=run_id,
+                details={
+                    "step_id": step_id,
+                    "classification": report.classification.value,
+                    "action": decision.action.value,
+                    "status": decision.status,
+                    "attempt": decision.attempt,
+                },
+            )
         return recovered, report, decision
 
     def classify(self, failure: FailureInputV1 | dict[str, Any]) -> FailureReportV1:
@@ -86,6 +100,21 @@ class RecoveryService:
         *,
         requested_action: RecoveryAction | None = None,
     ) -> RecoveryDecisionV1:
+        return self.decide_for_attempt(
+            failure,
+            attempt_count=run.recovery_attempt_count,
+            history=list((run.recovery_state or {}).get("history", [])),
+            requested_action=requested_action,
+        )
+
+    def decide_for_attempt(
+        self,
+        failure: FailureReportV1,
+        *,
+        attempt_count: int,
+        history: list[dict[str, Any]] | None = None,
+        requested_action: RecoveryAction | None = None,
+    ) -> RecoveryDecisionV1:
         max_attempts = int(os.getenv("SACM_MAX_RECOVERY_ATTEMPTS", "3"))
         minimum_confidence = float(
             os.getenv("SACM_DIAGNOSTIC_MIN_CONFIDENCE", "0.6")
@@ -96,9 +125,13 @@ class RecoveryService:
             raise ValueError(
                 "SACM_DIAGNOSTIC_MIN_CONFIDENCE must be between 0 and 1."
             )
-        attempt = run.recovery_attempt_count + 1
+        if attempt_count < 0:
+            raise ValueError("Recovery attempt count cannot be negative.")
+        attempt = attempt_count + 1
         action = requested_action or _ACTION_BY_FAILURE[failure.classification]
-        repeated_identical_patch = self._repeated_identical_patch(run, failure)
+        repeated_identical_patch = self._repeated_identical_patch(
+            history or [], failure
+        )
         autonomous_confidence_block = (
             requested_action is None and failure.confidence < minimum_confidence
         )
@@ -138,12 +171,13 @@ class RecoveryService:
         )
 
     @staticmethod
-    def _repeated_identical_patch(run: Run, failure: FailureReportV1) -> bool:
+    def _repeated_identical_patch(
+        history: list[dict[str, Any]], failure: FailureReportV1
+    ) -> bool:
         patch_hash = failure.details.get("patch_hash")
         fingerprint = failure.diagnosis_fingerprint
         if not patch_hash or not fingerprint:
             return False
-        history = (run.recovery_state or {}).get("history", [])
         return any(
             item.get("failure", {}).get("diagnosis_fingerprint") == fingerprint
             and item.get("failure", {}).get("details", {}).get("patch_hash")

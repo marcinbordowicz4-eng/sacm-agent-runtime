@@ -42,9 +42,11 @@ class CodexExecutorAgent(Agent):
         usage = self._usage_artifacts(result["usage"])
         tool_execution = self._tool_artifacts(result)
         summary = (
-            f"Codex completed isolated execution on branch {result['branch_name']}."
+            f"{result['executor'].title()} completed isolated execution on branch "
+            f"{result['branch_name']}."
             if success
-            else f"Codex execution failed on branch {result['branch_name']}."
+            else f"{result['executor'].title()} execution failed on branch "
+            f"{result['branch_name']}."
         )
         return AgentResult(
             agent_name=self.name,
@@ -55,6 +57,8 @@ class CodexExecutorAgent(Agent):
                     "branch_name": result["branch_name"],
                     "worktree_path": result["worktree_path"],
                     "returncode": result["codex"]["returncode"],
+                    "executor": result["executor"],
+                    "provider": result["provider"],
                     "dependency_cache": result["dependency_cache"],
                 }
             ]
@@ -126,7 +130,7 @@ class CodexExecutorAgent(Agent):
         observability = ObservabilityService()
         commands = [
             {
-                "tool": "codex",
+                "tool": result.get("executor", "codex"),
                 "duration_ms": result["codex"]["duration_ms"],
                 "returncode": result["codex"]["returncode"],
             },

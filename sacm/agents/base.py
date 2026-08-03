@@ -14,6 +14,9 @@ from sacm.schemas.result import AgentResult
 class Agent(ABC):
     name: str
     role: str
+    provider: str = "sacm"
+    model: str = "deterministic"
+    framework: str = "native"
 
     @abstractmethod
     def run(self, context: AgentContext) -> AgentResult:
@@ -87,6 +90,7 @@ class Agent(ABC):
             build_command=context.get("build_command"),
             token_budget=task.token_budget,
             context_package=context.get("context_package"),
+            briefing=context.get("briefing"),
             skill_state=dict(context.get("skill_state", {})),
         )
 
@@ -115,7 +119,8 @@ class Agent(ABC):
             )
             for artifact in result.artifacts
             if artifact.get("type") == "usage"
-            and {"provider", "model", "input_tokens", "output_tokens"} <= artifact.keys()
+            and {"provider", "model", "input_tokens", "output_tokens"}
+            <= artifact.keys()
         ]
         needs_approval = result.next_state_hint in {
             "awaiting_approval",
