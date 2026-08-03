@@ -47,7 +47,7 @@ class CodexExecutorAdapter:
             dependency_setup = self._run_with_telemetry(
                 dependency_cache.install_command,
                 worktree_path,
-                timeout=1_200,
+                timeout=self._dependency_setup_timeout(),
                 tool="dependency_setup",
                 telemetry_sink=telemetry_sink,
                 environment=dependency_environment,
@@ -229,6 +229,21 @@ class CodexExecutorAdapter:
         if not normalized:
             raise ValueError("task_id must contain at least one alphanumeric character.")
         return f"sacm/{normalized[:48]}"
+
+    @staticmethod
+    def _dependency_setup_timeout() -> int:
+        value = os.getenv("SACM_DEPENDENCY_SETUP_TIMEOUT_SECONDS", "3600")
+        try:
+            timeout = int(value)
+        except ValueError as exc:
+            raise ValueError(
+                "SACM_DEPENDENCY_SETUP_TIMEOUT_SECONDS must be an integer."
+            ) from exc
+        if timeout <= 0:
+            raise ValueError(
+                "SACM_DEPENDENCY_SETUP_TIMEOUT_SECONDS must be positive."
+            )
+        return timeout
 
     @staticmethod
     def _emit(
