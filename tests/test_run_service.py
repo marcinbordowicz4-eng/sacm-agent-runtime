@@ -10,7 +10,7 @@ from sacm.core.local_workflow import LocalWorkflow
 from sacm.core.run_service import RunService
 from sacm.core.workflow_backend import LocalWorkflowBackend, workflow_backend
 from sacm.core.workspace import WorkspaceManager, WorkspaceRef
-from sacm.infrastructure.db.models import AgentOutcomeAnalytics
+from sacm.infrastructure.db.models import AgentOutcomeAnalytics, Task
 from sacm.schemas.context import AgentContext
 from sacm.schemas.contracts import (
     AgentResultV1,
@@ -259,6 +259,22 @@ def test_local_workflow_persists_a_verified_completed_run(db, monkeypatch):
 
     assert result["status"] == "COMPLETED"
     assert RunService(db).list_steps(run.id)[0].status == "COMPLETED"
+
+
+def test_create_for_task_assigns_run_id_before_recording_events(db):
+    task = Task(
+        id="task-create-for-task",
+        title="Create durable run",
+        description="Verify the runtime event has a run ID.",
+        status="pending",
+    )
+    db.add(task)
+    db.commit()
+
+    run = RunService(db).create_for_task(task)
+
+    assert run.id
+    assert RunService(db).events(run.id)[0].run_id == run.id
 
 
 def test_local_workflow_repairs_failed_step_autonomously(db, monkeypatch):

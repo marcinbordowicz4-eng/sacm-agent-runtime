@@ -104,6 +104,7 @@ class RunService:
 
     def create_for_task(self, task: Task) -> Run:
         run = Run(
+            id=str(uuid.uuid4()),
             task=task,
             organization_id=task.organization_id,
             project_id=task.project_id,
