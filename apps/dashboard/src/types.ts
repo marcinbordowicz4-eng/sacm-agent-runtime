@@ -409,9 +409,8 @@ export type ExecutionJob = {
   task_id: string
   state: string
   executor_id?: string | null
-  attempt_count?: number
-  created_at?: string
-  updated_at?: string
+  attempt?: number
+  queued_at?: string
 }
 
 export type SupplyChainRecord = {
@@ -551,6 +550,7 @@ export type DashboardProps = {
   progress?: WorkflowProgress
   progressError: string
   error: string
+  unavailableData: string[]
   loading: boolean
   loadRuns: () => Promise<void>
   loadRun: (run: Run) => Promise<void>

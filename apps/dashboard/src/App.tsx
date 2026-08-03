@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useState } from 'react'
+import { type FormEvent, useEffect, useRef, useState } from 'react'
 import './App.css'
 import { LandingPage } from './components/LandingPage'
 import { MissionControl } from './components/MissionControl'
@@ -25,6 +25,20 @@ import type {
   SupplyChainRecord,
   WorkflowProgress,
 } from './types'
+
+class ApiRequestError extends Error {
+  readonly status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.status = status
+  }
+}
+
+type OptionalData<T> = {
+  data?: T
+  unavailable?: string
+}
 
 function DashboardApp() {
   const [baseUrl, setBaseUrl] = useState(import.meta.env.VITE_SACM_API_URL || '/api')
@@ -57,7 +71,10 @@ function DashboardApp() {
   const [progress, setProgress] = useState<WorkflowProgress>()
   const [progressError, setProgressError] = useState('')
   const [error, setError] = useState('')
+  const [unavailableData, setUnavailableData] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
+  const loadGeneration = useRef(0)
+  const clientsLoadGeneration = useRef(0)
 
   const request = async <T,>(path: string, init?: RequestInit): Promise<T> => {
     const headers = new Headers(init?.headers)
@@ -65,47 +82,100 @@ function DashboardApp() {
     if (token) headers.set('Authorization', `Bearer ${token}`)
     if (init?.body) headers.set('Content-Type', 'application/json')
     const response = await fetch(`${baseUrl}${path}`, { ...init, headers })
-    if (!response.ok) throw new Error((await response.text()) || `${response.status} ${response.statusText}`)
+    if (!response.ok) {
+      const body = await response.text()
+      let message = body
+      try {
+        const parsed: unknown = JSON.parse(body)
+        if (parsed && typeof parsed === 'object' && 'detail' in parsed && typeof parsed.detail === 'string') {
+          message = parsed.detail
+        }
+      } catch {
+        // Keep a non-JSON response as the endpoint's diagnostic.
+      }
+      throw new ApiRequestError(response.status, message || `${response.status} ${response.statusText}`)
+    }
     return response.json() as Promise<T>
   }
 
-  const optional = async <T,>(path: string): Promise<T | undefined> => {
+  const optional = async <T,>(path: string, label: string): Promise<OptionalData<T>> => {
     try {
-      return await request<T>(path)
-    } catch {
-      return undefined
+      return { data: await request<T>(path) }
+    } catch (cause) {
+      const message = cause instanceof ApiRequestError
+        ? `${label}: ${cause.status} ${cause.message}`
+        : `${label}: unavailable`
+      return { unavailable: message }
     }
   }
 
+  const clearMissionData = () => {
+    setSelected(undefined)
+    setSteps([])
+    setEvents([])
+    setApprovals([])
+    setEvidence([])
+    setSnapshots([])
+    setContext(undefined)
+    setAnalytics(undefined)
+    setProjectAnalytics(undefined)
+    setOrganizationAnalytics(undefined)
+    setComparison(undefined)
+    setFullApplication(undefined)
+    setOperationalHealth(undefined)
+    setExecutorFleet(undefined)
+    setExecutionJobs([])
+    setSupplyChainRecords([])
+    setSupplyChainCompleteness(undefined)
+    setEvidenceManifest(undefined)
+    setEvidenceVerification(undefined)
+    setLifecycleMetrics(undefined)
+    setProgress(undefined)
+    setProgressError('')
+  }
+
   const loadRun = async (run: Run) => {
+    const generation = ++loadGeneration.current
     setLoading(true)
     setError('')
+    setUnavailableData([])
     try {
-      const [current, nextContext, nextSteps, nextEvents, nextApprovals, nextEvidence, nextAnalytics, nextSnapshots, nextComparison, nextLifecycleMetrics] = await Promise.all([
+      const [current, contextResult, stepsResult, eventsResult, approvalsResult, evidenceResult, analyticsResult, snapshotsResult, comparisonResult, lifecycleMetricsResult] = await Promise.all([
         request<Run>(`/v1/runs/${run.id}`),
-        request<RunContext>(`/v1/runs/${run.id}/context`),
-        request<Step[]>(`/v1/runs/${run.id}/steps`),
-        request<Event[]>(`/v1/runs/${run.id}/events`),
-        request<Approval[]>(`/v1/approvals?run_id=${run.id}`),
-        request<Evidence[]>(`/v1/runs/${run.id}/evidence`),
-        request<RunAnalytics>(`/v1/runs/${run.id}/analytics`),
-        request<Snapshot[]>(`/v1/runs/${run.id}/snapshots`),
-        optional<ReplayComparison>(`/v1/runs/${run.id}/comparison`),
-        optional<LifecycleMetrics>(`/v1/runs/${run.id}/lifecycle-metrics`),
+        optional<RunContext>(`/v1/runs/${run.id}/context`, 'Mission context'),
+        optional<Step[]>(`/v1/runs/${run.id}/steps`, 'Run steps'),
+        optional<Event[]>(`/v1/runs/${run.id}/events`, 'Event timeline'),
+        optional<Approval[]>(`/v1/approvals?run_id=${run.id}`, 'Approvals'),
+        optional<Evidence[]>(`/v1/runs/${run.id}/evidence`, 'Evidence packs'),
+        optional<RunAnalytics>(`/v1/runs/${run.id}/analytics`, 'Outcome analytics'),
+        optional<Snapshot[]>(`/v1/runs/${run.id}/snapshots`, 'Snapshots'),
+        optional<ReplayComparison>(`/v1/runs/${run.id}/comparison`, 'Replay comparison'),
+        optional<LifecycleMetrics>(`/v1/runs/${run.id}/lifecycle-metrics`, 'Lifecycle telemetry'),
       ])
+      if (generation !== loadGeneration.current) return
+      const nextContext = contextResult.data
+      const nextSteps = stepsResult.data || []
+      const nextEvents = eventsResult.data || []
+      const nextApprovals = approvalsResult.data || []
+      const nextEvidence = evidenceResult.data || []
+      const nextAnalytics = analyticsResult.data
+      const nextSnapshots = snapshotsResult.data || []
+      const nextComparison = comparisonResult.data
+      const nextLifecycleMetrics = lifecycleMetricsResult.data
       const latestEvidence = [...nextEvidence].sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))[0]
-      const organizationId = nextContext.organization?.id
-      const [projectAggregate, organizationAggregate, nextApplication, nextHealth, nextFleet, nextJobs, nextSupplyChain, nextCompleteness, nextManifest] = await Promise.all([
-        nextContext.project ? optional<AggregateAnalytics>(`/v1/analytics/projects/${nextContext.project.id}`) : undefined,
-        organizationId ? optional<AggregateAnalytics>(`/v1/analytics/organizations/${organizationId}`) : undefined,
-        optional<ApplicationContextFull>(`/v1/tasks/${run.task_id}/application-context`),
-        optional<OperationalHealth>(`/v1/operations/health${organizationId ? `?organization_id=${organizationId}` : ''}`),
-        organizationId ? optional<ExecutorFleetHealth>(`/v1/executors/health?organization_id=${organizationId}`) : undefined,
-        organizationId ? optional<ExecutionJob[]>(`/v1/operations/execution/jobs?organization_id=${organizationId}`) : undefined,
-        optional<SupplyChainRecord[]>(`/v1/runs/${run.id}/supply-chain/records`),
-        optional<SupplyChainCompleteness>(`/v1/runs/${run.id}/supply-chain/completeness`),
-        latestEvidence ? optional<Record<string, unknown>>(`/v1/runs/${run.id}/evidence/${latestEvidence.id}/manifest`) : undefined,
+      const organizationId = nextContext?.organization?.id
+      const [projectAggregateResult, organizationAggregateResult, applicationResult, healthResult, fleetResult, jobsResult, supplyChainResult, completenessResult, manifestResult] = await Promise.all([
+        nextContext?.project ? optional<AggregateAnalytics>(`/v1/analytics/projects/${nextContext.project.id}`, 'Project analytics') : Promise.resolve<OptionalData<AggregateAnalytics>>({}),
+        organizationId ? optional<AggregateAnalytics>(`/v1/analytics/organizations/${organizationId}`, 'Organization analytics') : Promise.resolve<OptionalData<AggregateAnalytics>>({}),
+        optional<ApplicationContextFull>(`/v1/tasks/${run.task_id}/application-context`, 'Application context'),
+        optional<OperationalHealth>(`/v1/operations/health${organizationId ? `?organization_id=${organizationId}` : ''}`, 'Operational health'),
+        organizationId ? optional<ExecutorFleetHealth>(`/v1/executors/health?organization_id=${organizationId}`, 'Executor fleet health') : Promise.resolve<OptionalData<ExecutorFleetHealth>>({}),
+        organizationId ? optional<ExecutionJob[]>(`/v1/operations/execution/jobs?organization_id=${organizationId}`, 'Execution jobs') : Promise.resolve<OptionalData<ExecutionJob[]>>({}),
+        optional<SupplyChainRecord[]>(`/v1/runs/${run.id}/supply-chain/records`, 'Supply-chain records'),
+        optional<SupplyChainCompleteness>(`/v1/runs/${run.id}/supply-chain/completeness`, 'Supply-chain completeness'),
+        latestEvidence ? optional<Record<string, unknown>>(`/v1/runs/${run.id}/evidence/${latestEvidence.id}/manifest`, 'Evidence manifest') : Promise.resolve<OptionalData<Record<string, unknown>>>({}),
       ])
+      if (generation !== loadGeneration.current) return
       setSelected(current)
       setContext(nextContext)
       setSteps(nextSteps)
@@ -115,53 +185,98 @@ function DashboardApp() {
       setAnalytics(nextAnalytics)
       setSnapshots(nextSnapshots)
       setComparison(nextComparison)
-      setProjectAnalytics(projectAggregate)
-      setOrganizationAnalytics(organizationAggregate)
-      setFullApplication(nextApplication)
-      setOperationalHealth(nextHealth)
-      setExecutorFleet(nextFleet)
-      setExecutionJobs((nextJobs || []).filter((job) => job.run_id === run.id))
-      setSupplyChainRecords(nextSupplyChain || [])
-      setSupplyChainCompleteness(nextCompleteness)
-      setEvidenceManifest(nextManifest)
+      setProjectAnalytics(projectAggregateResult.data)
+      setOrganizationAnalytics(organizationAggregateResult.data)
+      setFullApplication(applicationResult.data)
+      setOperationalHealth(healthResult.data)
+      setExecutorFleet(fleetResult.data)
+      setExecutionJobs((jobsResult.data || []).filter((job) => job.run_id === run.id))
+      setSupplyChainRecords(supplyChainResult.data || [])
+      setSupplyChainCompleteness(completenessResult.data)
+      setEvidenceManifest(manifestResult.data)
       setEvidenceVerification(undefined)
       setLifecycleMetrics(nextLifecycleMetrics)
+      setUnavailableData([
+        contextResult.unavailable,
+        stepsResult.unavailable,
+        eventsResult.unavailable,
+        approvalsResult.unavailable,
+        evidenceResult.unavailable,
+        analyticsResult.unavailable,
+        snapshotsResult.unavailable,
+        comparisonResult.unavailable,
+        lifecycleMetricsResult.unavailable,
+        projectAggregateResult.unavailable,
+        organizationAggregateResult.unavailable,
+        applicationResult.unavailable,
+        healthResult.unavailable,
+        fleetResult.unavailable,
+        jobsResult.unavailable,
+        supplyChainResult.unavailable,
+        completenessResult.unavailable,
+        manifestResult.unavailable,
+      ].filter((item): item is string => Boolean(item)))
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Unable to load mission')
+      if (generation === loadGeneration.current) {
+        clearMissionData()
+        setError(cause instanceof Error ? cause.message : 'Unable to load mission')
+      }
     } finally {
-      setLoading(false)
+      if (generation === loadGeneration.current) setLoading(false)
     }
   }
 
   const loadRuns = async () => {
+    const generation = ++loadGeneration.current
     setLoading(true)
     setError('')
+    setUnavailableData([])
     try {
-      const [nextRuns, nextExpertBenchmarkAssessment] = await Promise.all([
+      const [nextRuns, benchmarkResult] = await Promise.all([
         request<Run[]>('/v1/runs'),
-        optional<ExpertBenchmarkAssessment>('/v1/benchmarks/expert-assessment'),
+        optional<ExpertBenchmarkAssessment>('/v1/benchmarks/expert-assessment', 'Expert assessment'),
       ])
+      if (generation !== loadGeneration.current) return
       setRuns(nextRuns)
-      setExpertBenchmarkAssessment(nextExpertBenchmarkAssessment)
-      const analyticsResults = await Promise.all(nextRuns.map((run) => optional<RunAnalytics>(`/v1/runs/${run.id}/analytics`)))
-      setPortfolioAnalytics(analyticsResults.filter((item): item is RunAnalytics => item !== undefined))
+      setExpertBenchmarkAssessment(benchmarkResult.data)
+      const analyticsResults = await Promise.all(nextRuns.map((run) => optional<RunAnalytics>(`/v1/runs/${run.id}/analytics`, `Outcome analytics for ${run.id}`)))
+      if (generation !== loadGeneration.current) return
+      setPortfolioAnalytics(analyticsResults.flatMap((item) => item.data ? [item.data] : []))
       const current = selected && nextRuns.find((run) => run.id === selected.id)
       if (current) await loadRun(current)
       else if (nextRuns[0]) await loadRun(nextRuns[0])
+      else {
+        clearMissionData()
+        setUnavailableData([
+          benchmarkResult.unavailable,
+          ...analyticsResults.map((item) => item.unavailable),
+        ].filter((item): item is string => Boolean(item)))
+      }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Unable to load missions')
+      if (generation === loadGeneration.current) setError(cause instanceof Error ? cause.message : 'Unable to load missions')
     } finally {
-      setLoading(false)
+      if (generation === loadGeneration.current) setLoading(false)
     }
   }
 
   const loadClients = async () => {
-    const organizations = await request<Omit<Client, 'projects'>[]>('/v1/organizations')
-    const populated = await Promise.all(organizations.map(async (organization) => ({
-      ...organization,
-      projects: await request<Client['projects']>(`/v1/organizations/${organization.id}/projects`),
-    })))
-    setClients(populated)
+    const generation = ++clientsLoadGeneration.current
+    try {
+      const organizations = await request<Omit<Client, 'projects'>[]>('/v1/organizations')
+      const populated = await Promise.all(organizations.map(async (organization) => {
+        const projects = await optional<Client['projects']>(`/v1/organizations/${organization.id}/projects`, `Projects for ${organization.name}`)
+        return { ...organization, projects: projects.data || [], unavailable: projects.unavailable }
+      }))
+      if (generation !== clientsLoadGeneration.current) return
+      setClients(populated.map(({ unavailable: _, ...organization }) => organization))
+      const unavailable = populated.flatMap((organization) => organization.unavailable ? [organization.unavailable] : [])
+      if (unavailable.length) setUnavailableData((current) => [...current, ...unavailable])
+    } catch (cause) {
+      if (generation === clientsLoadGeneration.current) {
+        setClients([])
+        setError(cause instanceof Error ? cause.message : 'Unable to load organizations')
+      }
+    }
   }
 
   // Initial connection load; later refreshes are explicit to avoid request loops.
@@ -225,7 +340,9 @@ function DashboardApp() {
   const submitSettings = (event: FormEvent) => {
     event.preventDefault()
     localStorage.setItem('sacm-actor', actor)
-    void Promise.all([loadRuns(), loadClients()])
+    void Promise.all([loadRuns(), loadClients()]).catch((cause) => {
+      setError(cause instanceof Error ? cause.message : 'Unable to refresh Mission Control data')
+    })
   }
 
   return <MissionControl
@@ -262,6 +379,7 @@ function DashboardApp() {
     progress={progress}
     progressError={progressError}
     error={error}
+    unavailableData={unavailableData}
     loading={loading}
     loadRuns={loadRuns}
     loadRun={loadRun}

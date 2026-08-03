@@ -71,7 +71,7 @@ export function CommandCenterPage(props: DashboardProps & { onMission: (run: Run
       <div><span>Estimated cost</span><strong>{money(cost)}</strong><small>Recorded provider estimates</small></div>
       <div><span>Requirement coverage</span><strong>{metric(requirementCoverage, '%')}</strong><small>Mean of recorded runs</small></div>
       <div><span>Evidence coverage</span><strong>{metric(evidenceCoverage, '%')}</strong><small>Mean of recorded runs</small></div>
-      <div><span>Blocked actions</span><strong>{blockedPolicies + blockedSecurity}</strong><small>{blockedPolicies} policy · {blockedSecurity} high/critical security</small></div>
+      <div><span>Policy blocks / high-critical findings</span><strong>{blockedPolicies} / {blockedSecurity}</strong><small>Recorded policy blocks · open high/critical findings</small></div>
       <div><span>Executor capacity</span><strong>{metric(executorFleet?.capacity.available_slots)}</strong><small>{executorFleet ? `${executorFleet.active}/${executorFleet.total} executors active` : 'Not authorized or not configured'}</small></div>
     </section>
     {(portfolioAnalytics.length < runs.length || legacyCount > 0) && <p className="data-notice"><b>PARTIAL / LEGACY PORTFOLIO</b> {runs.length - portfolioAnalytics.length} missions lack authorized outcome analytics; {legacyCount} analytics records report partial or legacy source data. Missing values are not treated as zero.</p>}
@@ -190,12 +190,14 @@ export function MissionsPage(props: DashboardProps) {
   const estimatedCost = analytics?.estimated_cost_usd ?? (
     telemetry?.cost_estimation_available ? telemetry.estimated_cost_usd : null
   )
+  const canResume = selected.status === 'FAILED'
+  const canCancel = !['COMPLETED', 'CANCELLED'].includes(selected.status)
   return <>
     <PageHeader
       eyebrow={`MISSION ${context?.task.external_id || selected.task_id.slice(0, 10)}`}
       title={context?.task.title || 'Untitled mission'}
       description={context?.task.description || 'Task description was not recorded.'}
-      actions={<><Status value={selected.status} /><button type="button" onClick={() => void action(`/v1/runs/${selected.id}/resume`)}>Resume</button><button type="button" onClick={() => void action(`/v1/runs/${selected.id}/cancel`)}>Cancel</button></>}
+      actions={<><Status value={selected.status} />{canResume && <button type="button" onClick={() => void action(`/v1/runs/${selected.id}/resume`)}>Resume failed run</button>}{canCancel && <button type="button" onClick={() => void action(`/v1/runs/${selected.id}/cancel`)}>Cancel run</button>}</>}
     />
     <div className="mission-picker" role="list" aria-label="Authorized missions">{runs.map((run) => <button type="button" role="listitem" key={run.id} className={run.id === selected.id ? 'active' : ''} onClick={() => void loadRun(run)} disabled={loading}>
       <b>{run.task_id.slice(0, 8)}</b><Status value={run.status} /><small>{date(run.updated_at)}</small>
@@ -224,7 +226,7 @@ export function MissionsPage(props: DashboardProps) {
       </article>
       <article className="surface">
         <div className="section-head"><div><p className="eyebrow">JOBS & AGENTS</p><h2>Execution plane</h2></div><span className="count-pill">{executionJobs.length}</span></div>
-        {executionJobs.length ? executionJobs.map((job) => <div className="job-row" key={job.id}><div><b>{job.id.slice(0, 12)}</b><small>Step {job.run_step_id.slice(0, 8)} · attempt {job.attempt_count ?? 'not recorded'}</small></div><Status value={job.state} /></div>) : <MissingData text="No authorized execution jobs were returned. Operations-level access may be required." />}
+        {executionJobs.length ? executionJobs.map((job) => <div className="job-row" key={job.id}><div><b>{job.id.slice(0, 12)}</b><small>Step {job.run_step_id.slice(0, 8)} · attempt {job.attempt ?? 'not recorded'}</small></div><Status value={job.state} /></div>) : <MissingData text="No authorized execution jobs were returned. Operations-level access may be required." />}
         <h3>Agent activity</h3>
         {analytics?.agents.length ? analytics.agents.map((agent) => <AgentRow agent={agent} key={agent.invocation_id} />) : <MissingData text="No persisted agent_result events are available." />}
       </article>
@@ -458,13 +460,15 @@ function ExpertAssessmentTable({ assessment }: { assessment?: ExpertBenchmarkAss
 
 export function SecurityPage(props: DashboardProps) {
   const findings = props.context?.execution_plan?.security_review?.findings || props.analytics?.details.security_findings || []
-  const blocked = (props.analytics?.high_critical_security_finding_count || 0) + (props.analytics?.policy_blocked ? 1 : 0)
+  const highCriticalFindings = props.analytics?.high_critical_security_finding_count || 0
+  const policyBlocks = props.analytics?.policy_blocked ? 1 : 0
+  const actionHeldForReview = highCriticalFindings > 0 || policyBlocks > 0
   return <>
     <PageHeader eyebrow="TRUST CENTER" title="Security" description="Recorded review findings, policy blocks, supply-chain completeness and platform signing health." />
-    <section className="security-summary"><div><span>Open findings</span><strong>{metric(props.analytics?.open_security_finding_count)}</strong></div><div><span>High / critical</span><strong>{metric(props.analytics?.high_critical_security_finding_count)}</strong></div><div><span>Blocked actions</span><strong>{blocked}</strong></div><div><span>Signing health</span><Status value={statusOf(props.operationalHealth?.signing)} /></div><div><span>Supply chain</span><Status value={props.supplyChainCompleteness?.status || 'NOT RECORDED'} /></div></section>
+    <section className="security-summary"><div><span>Open findings</span><strong>{metric(props.analytics?.open_security_finding_count)}</strong></div><div><span>High / critical</span><strong>{metric(props.analytics?.high_critical_security_finding_count)}</strong></div><div><span>Policy blocks</span><strong>{policyBlocks}</strong></div><div><span>Signing health</span><Status value={statusOf(props.operationalHealth?.signing)} /></div><div><span>Supply chain</span><Status value={props.supplyChainCompleteness?.status || 'NOT RECORDED'} /></div></section>
     <section className="two-column">
       <article className="surface"><div className="section-head"><div><p className="eyebrow">SECURITY REVIEW</p><h2>{props.context?.execution_plan?.security_review?.status || 'Not recorded'}</h2></div></div>{findings.length ? findings.map((finding, index) => <div className="finding" key={text(finding.finding_id, String(index))}><Status value={text(finding.severity, 'UNKNOWN')} /><div><b>{text(finding.title, 'Untitled finding')}</b><p>{text(finding.description, 'Description not recorded.')}</p></div></div>) : <MissingData text="No security findings were persisted." />}</article>
-      <article className="surface"><div className="section-head"><div><p className="eyebrow">SECURITY AUTONOMY</p><h2>{blocked ? 'Action blocked' : 'No recorded block'}</h2></div><Status value={blocked ? 'BLOCKED' : 'SUGGESTED'} /></div><p>{blocked ? 'Recorded security or policy signals require remediation or approval.' : 'This is not a security guarantee; it means no blocking signal was returned by the selected mission APIs.'}</p><details><summary>Security evidence</summary><pre>{json({ review: props.context?.execution_plan?.security_review, supply_chain: props.supplyChainCompleteness, signing: props.operationalHealth?.signing })}</pre></details></article>
+      <article className="surface"><div className="section-head"><div><p className="eyebrow">SECURITY AUTONOMY</p><h2>{actionHeldForReview ? 'Action held for review' : 'No recorded policy block'}</h2></div><Status value={actionHeldForReview ? 'REVIEW REQUIRED' : 'SUGGESTED'} /></div><p>{actionHeldForReview ? 'Recorded policy blocks or high/critical findings require remediation or approval before relying on an autonomous action.' : 'This is not a security guarantee; it means no blocking signal was returned by the selected mission APIs.'}</p><details><summary>Security evidence</summary><pre>{json({ review: props.context?.execution_plan?.security_review, supply_chain: props.supplyChainCompleteness, signing: props.operationalHealth?.signing })}</pre></details></article>
     </section>
   </>
 }

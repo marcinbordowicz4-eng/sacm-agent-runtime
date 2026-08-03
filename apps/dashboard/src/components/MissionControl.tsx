@@ -123,6 +123,7 @@ export function MissionControl(props: DashboardProps) {
         <div className="topbar-state"><span className={props.error ? 'connection-dot error-dot' : 'connection-dot'} /><span>{props.error ? 'Connection issue' : props.loading ? 'Refreshing' : 'API connected'}</span></div>
       </div>
       {props.error && <p className="error" role="alert">{props.error}</p>}
+      {props.unavailableData.length > 0 && <p className="data-notice" role="status"><b>PARTIAL DATA</b> {props.unavailableData.join(' · ')}</p>}
       <div id="page-content" className="page-content" tabIndex={-1} aria-live="polite">{page}</div>
     </section>
     {commandOpen && <div className="command-backdrop" role="presentation" onMouseDown={(event) => {
