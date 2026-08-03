@@ -7,6 +7,7 @@ import shlex
 import shutil
 import stat
 import subprocess
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -330,10 +331,10 @@ class RepositoryAdapter:
         target = worktree / "node_modules"
         temporary_target = worktree / f".sacm-node-modules-{uuid.uuid4().hex}"
         try:
-            shutil.copytree(
+            self._copy_node_modules(
                 dependency_cache.node_modules_path,
                 temporary_target,
-                symlinks=True,
+                operation="restore",
             )
             self._remove_node_modules(target)
             temporary_target.replace(target)
@@ -362,7 +363,11 @@ class RepositoryAdapter:
         )
         try:
             dependency_cache.ready_marker_path.unlink(missing_ok=True)
-            shutil.copytree(source, temporary_snapshot, symlinks=True)
+            self._copy_node_modules(
+                source,
+                temporary_snapshot,
+                operation="publish",
+            )
             self._remove_node_modules(dependency_cache.node_modules_path)
             temporary_snapshot.replace(dependency_cache.node_modules_path)
             temporary_marker = dependency_cache.ready_marker_path.with_suffix(
@@ -380,6 +385,52 @@ class RepositoryAdapter:
         finally:
             if temporary_snapshot.exists() or temporary_snapshot.is_symlink():
                 self._remove_node_modules(temporary_snapshot)
+
+    @staticmethod
+    def _copy_node_modules(source: Path, target: Path, *, operation: str) -> None:
+        timeout = RepositoryAdapter._node_cache_copy_timeout()
+        target.mkdir()
+        started_at = time.monotonic()
+        try:
+            subprocess.run(
+                ["cp", "-a", f"{source}{os.sep}.", str(target)],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RepositoryOperationError(
+                f"Node dependency cache {operation} exceeded its {timeout}-second "
+                "timeout."
+            ) from exc
+        except (OSError, subprocess.CalledProcessError) as exc:
+            detail = (
+                exc.stderr.strip()
+                if isinstance(exc, subprocess.CalledProcessError) and exc.stderr
+                else str(exc)
+            )
+            raise RepositoryOperationError(
+                f"Cannot {operation} Node dependency cache {source}: {detail}"
+            ) from exc
+        if time.monotonic() - started_at > timeout:
+            raise RepositoryOperationError(
+                f"Node dependency cache {operation} exceeded its {timeout}-second "
+                "timeout."
+            )
+
+    @staticmethod
+    def _node_cache_copy_timeout() -> int:
+        value = os.getenv("SACM_NODE_CACHE_COPY_TIMEOUT_SECONDS", "300")
+        try:
+            timeout = int(value)
+        except ValueError as exc:
+            raise ValueError(
+                "SACM_NODE_CACHE_COPY_TIMEOUT_SECONDS must be an integer."
+            ) from exc
+        if timeout <= 0:
+            raise ValueError("SACM_NODE_CACHE_COPY_TIMEOUT_SECONDS must be positive.")
+        return timeout
 
     @staticmethod
     def _remove_node_modules(path: Path) -> None:

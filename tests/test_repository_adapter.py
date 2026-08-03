@@ -300,6 +300,36 @@ def test_node_dependency_snapshot_is_ready_only_after_publish_and_isolated(
     )
 
 
+def test_node_dependency_cache_copy_times_out(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    (source / "module.js").write_text("module.exports = {}")
+    monkeypatch.setenv("SACM_NODE_CACHE_COPY_TIMEOUT_SECONDS", "1")
+
+    def stalled_copy(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(
+        "sacm.adapters.repository_adapter.subprocess.run", stalled_copy
+    )
+
+    with pytest.raises(RepositoryOperationError, match="cache restore exceeded"):
+        RepositoryAdapter._copy_node_modules(source, target, operation="restore")
+
+
+@pytest.mark.parametrize("value", ["0", "invalid"])
+def test_node_dependency_cache_copy_timeout_must_be_positive_integer(
+    tmp_path, monkeypatch, value
+):
+    monkeypatch.setenv("SACM_NODE_CACHE_COPY_TIMEOUT_SECONDS", value)
+
+    with pytest.raises(ValueError, match="SACM_NODE_CACHE_COPY_TIMEOUT_SECONDS"):
+        RepositoryAdapter._copy_node_modules(
+            tmp_path / "source", tmp_path / "target", operation="restore"
+        )
+
+
 def test_dependency_cache_root_cannot_be_in_worktree(tmp_path, monkeypatch):
     repository = tmp_path / "repository"
     worktree = tmp_path / "worktree"
