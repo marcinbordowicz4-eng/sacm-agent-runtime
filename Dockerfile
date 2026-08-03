@@ -38,11 +38,14 @@ RUN addgroup --system sacm && adduser --system --ingroup sacm sacm
 COPY --chown=sacm:sacm . .
 RUN chown -R sacm:sacm /app
 RUN mkdir -p /app/.sacm/evidence /app/.sacm/state /app/.sacm/gh /app/.sacm/codex \
+    /app/.sacm/state/home /app/.sacm/state/cache \
     && chown -R sacm:sacm /app/.sacm
 RUN chmod 0755 /app/docker-entrypoint.sh
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    HOME=/app/.sacm/state/home \
+    XDG_CACHE_HOME=/app/.sacm/state/cache
 
 USER sacm
 

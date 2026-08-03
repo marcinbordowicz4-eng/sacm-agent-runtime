@@ -24,8 +24,11 @@ services:
       SACM_REPOSITORY_ROOT: ${SACM_CONTAINER_REPOSITORY_ROOT:-/repositories}
       SACM_WORKTREE_ROOT: ${SACM_CONTAINER_WORKTREE_ROOT:-/worktrees}
       SACM_STATE_ROOT: /app/.sacm/state
+      HOME: /app/.sacm/state/home
+      XDG_CACHE_HOME: /app/.sacm/state/cache
       GH_CONFIG_DIR: /app/.sacm/state/gh
       CODEX_HOME: /app/.sacm/state/codex
+      COPILOT_GITHUB_TOKEN: ${COPILOT_GITHUB_TOKEN:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     depends_on:
       postgres:
@@ -73,8 +76,11 @@ services:
       SACM_REPOSITORY_ROOT: ${SACM_CONTAINER_REPOSITORY_ROOT:-/repositories}
       SACM_WORKTREE_ROOT: ${SACM_CONTAINER_WORKTREE_ROOT:-/worktrees}
       SACM_STATE_ROOT: /app/.sacm/state
+      HOME: /app/.sacm/state/home
+      XDG_CACHE_HOME: /app/.sacm/state/cache
       GH_CONFIG_DIR: /app/.sacm/state/gh
       CODEX_HOME: /app/.sacm/state/codex
+      COPILOT_GITHUB_TOKEN: ${COPILOT_GITHUB_TOKEN:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     depends_on:
       api:
