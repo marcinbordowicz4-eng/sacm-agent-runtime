@@ -172,10 +172,10 @@ class RepositoryAdapter:
 
     def dependency_cache(self, worktree_path: str | Path) -> DependencyCache | None:
         worktree = Path(worktree_path).resolve()
-        lockfile = self._dependency_lockfile(worktree)
-        if lockfile is None:
+        manifest = self._dependency_manifest(worktree)
+        if manifest is None:
             return None
-        manager, path = lockfile
+        manager, path = manifest
         digest = hashlib.sha256()
         digest.update(f"{manager}\0{path.name}\0".encode())
         digest.update(path.read_bytes())
@@ -210,12 +210,33 @@ class RepositoryAdapter:
             "pnpm": {"pnpm_config_store_dir": str(resolved_cache)},
             "yarn": {"YARN_CACHE_FOLDER": str(resolved_cache)},
             "bun": {"BUN_INSTALL_CACHE_DIR": str(resolved_cache)},
+            "gradle": {"GRADLE_USER_HOME": str(resolved_cache)},
+            "uv": {"UV_CACHE_DIR": str(resolved_cache)},
+            "poetry": {"POETRY_CACHE_DIR": str(resolved_cache)},
+            "cargo": {"CARGO_HOME": str(resolved_cache)},
+            "go": {"GOMODCACHE": str(resolved_cache)},
+            "maven": {},
         }[manager]
         install_command = {
             "npm": ["npm", "ci", "--prefer-offline", "--no-audit", "--no-fund"],
             "pnpm": ["pnpm", "install", "--frozen-lockfile", "--prefer-offline"],
             "yarn": ["yarn", "install", "--immutable"],
             "bun": ["bun", "install", "--frozen-lockfile"],
+            "maven": [
+                "mvn",
+                "-B",
+                f"-Dmaven.repo.local={resolved_cache}",
+                "dependency:go-offline",
+            ],
+            "gradle": [
+                "./gradlew" if (worktree / "gradlew").is_file() else "gradle",
+                "--no-daemon",
+                "dependencies",
+            ],
+            "uv": ["uv", "sync", "--frozen", "--no-install-project"],
+            "poetry": ["poetry", "install", "--no-root"],
+            "cargo": ["cargo", "fetch"],
+            "go": ["go", "mod", "download"],
         }[manager]
         return DependencyCache(
             manager=manager,
@@ -226,7 +247,7 @@ class RepositoryAdapter:
         )
 
     @staticmethod
-    def _dependency_lockfile(worktree_path: Path) -> tuple[str, Path] | None:
+    def _dependency_manifest(worktree_path: Path) -> tuple[str, Path] | None:
         candidates = (
             ("npm", "npm-shrinkwrap.json"),
             ("npm", "package-lock.json"),
@@ -234,6 +255,14 @@ class RepositoryAdapter:
             ("yarn", "yarn.lock"),
             ("bun", "bun.lock"),
             ("bun", "bun.lockb"),
+            ("maven", "pom.xml"),
+            ("gradle", "gradle.lockfile"),
+            ("gradle", "build.gradle.kts"),
+            ("gradle", "build.gradle"),
+            ("uv", "uv.lock"),
+            ("poetry", "poetry.lock"),
+            ("cargo", "Cargo.lock"),
+            ("go", "go.sum"),
         )
         for manager, filename in candidates:
             path = worktree_path / filename

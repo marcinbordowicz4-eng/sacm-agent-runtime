@@ -129,6 +129,18 @@ class CodexExecutorAgent(Agent):
     def _tool_artifacts(result: dict) -> list[dict]:
         observability = ObservabilityService()
         commands = [
+            *(
+                [
+                    {
+                        "tool": "dependency_setup",
+                        "command": result["dependency_setup"]["command"],
+                        "duration_ms": result["dependency_setup"]["duration_ms"],
+                        "returncode": result["dependency_setup"]["returncode"],
+                    }
+                ]
+                if result.get("dependency_setup")
+                else []
+            ),
             {
                 "tool": result.get("executor", "codex"),
                 "duration_ms": result["codex"]["duration_ms"],

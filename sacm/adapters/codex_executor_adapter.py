@@ -17,6 +17,8 @@ from sacm.core.verification_execution import (
 class CodexExecutorAdapter:
     """Runs Codex in an isolated Git worktree and returns execution evidence."""
 
+    _DEPENDENCY_MARKER = ".sacm-dependency-cache-key"
+
     def __init__(self, repo_path: str) -> None:
         self.repository = RepositoryAdapter(repo_path)
 
@@ -35,13 +37,16 @@ class CodexExecutorAdapter:
             dependency_cache.environment if dependency_cache else None
         )
         dependency_setup = None
-        if dependency_cache and not (Path(worktree_path) / "node_modules").is_dir():
+        if dependency_cache and not self._dependencies_are_ready(
+            worktree_path, dependency_cache.cache_key
+        ):
             dependency_setup = self._run(
                 dependency_cache.install_command,
                 worktree_path,
                 timeout=1_200,
                 environment=dependency_environment,
             )
+            dependency_setup["command"] = shlex.join(dependency_cache.install_command)
         if (
             dependency_cache is not None
             and dependency_setup
@@ -63,6 +68,8 @@ class CodexExecutorAdapter:
                 },
                 "dependency_setup": dependency_setup,
             }
+        if dependency_cache and dependency_setup:
+            self._write_dependency_marker(worktree_path, dependency_cache.cache_key)
         command = (
             [
                 "copilot",
@@ -116,6 +123,31 @@ class CodexExecutorAdapter:
             ),
             "dependency_setup": dependency_setup,
         }
+
+    @classmethod
+    def _dependencies_are_ready(cls, worktree_path: str, cache_key: str) -> bool:
+        worktree = Path(worktree_path)
+        marker = worktree / cls._DEPENDENCY_MARKER
+        try:
+            return (
+                (worktree / "node_modules").is_dir()
+                and marker.is_file()
+                and marker.read_text(encoding="utf-8").strip() == cache_key
+            )
+        except OSError:
+            return False
+
+    @classmethod
+    def _write_dependency_marker(cls, worktree_path: str, cache_key: str) -> None:
+        marker = Path(worktree_path) / cls._DEPENDENCY_MARKER
+        temporary_marker = marker.with_suffix(f"{marker.suffix}.tmp")
+        try:
+            temporary_marker.write_text(f"{cache_key}\n", encoding="utf-8")
+            temporary_marker.replace(marker)
+        except OSError as exc:
+            raise RuntimeError(
+                f"Could not record prepared dependencies for {worktree_path}: {exc}"
+            ) from exc
 
     def _run_verification(
         self,

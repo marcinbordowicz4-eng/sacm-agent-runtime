@@ -244,6 +244,34 @@ def test_dependency_cache_lockfile_change_invalidates_key(tmp_path, monkeypatch)
     assert first.cache_path != second.cache_path
 
 
+@pytest.mark.parametrize(
+    ("manifest", "manager", "command"),
+    [
+        ("pom.xml", "maven", "mvn"),
+        ("build.gradle", "gradle", "gradle"),
+        ("uv.lock", "uv", "uv"),
+        ("poetry.lock", "poetry", "poetry"),
+        ("Cargo.lock", "cargo", "cargo"),
+        ("go.sum", "go", "go"),
+    ],
+)
+def test_dependency_cache_supports_non_node_manifests(
+    tmp_path, monkeypatch, manifest, manager, command
+):
+    repository = tmp_path / "repository"
+    worktree = tmp_path / "worktree"
+    repository.mkdir()
+    worktree.mkdir()
+    (worktree / manifest).write_text("dependency-manifest")
+    monkeypatch.setenv("SACM_DEPENDENCY_CACHE_ROOT", str(tmp_path / "cache"))
+
+    cache = RepositoryAdapter(str(repository)).dependency_cache(worktree)
+
+    assert cache is not None
+    assert cache.manager == manager
+    assert cache.install_command[0] == command
+
+
 def test_create_worktree_reports_missing_git(temp_repo, monkeypatch):
     def missing_git(*args, **kwargs):
         raise FileNotFoundError

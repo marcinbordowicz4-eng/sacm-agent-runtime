@@ -82,6 +82,7 @@ def test_codex_executor_prepares_independent_dependencies(monkeypatch, tmp_path)
     adapter = CodexExecutorAdapter(str(tmp_path))
     worktree = tmp_path / "worktree"
     worktree.mkdir()
+    (worktree / "node_modules").mkdir()
     calls = []
     cache = SimpleNamespace(
         manager="npm",
@@ -113,6 +114,46 @@ def test_codex_executor_prepares_independent_dependencies(monkeypatch, tmp_path)
     assert calls[0] == ["npm", "ci", "--prefer-offline"]
     assert calls[1][0:2] == ["codex", "exec"]
     assert result["dependency_cache"]["prepared"] is True
+    assert (worktree / ".sacm-dependency-cache-key").read_text() == "npm-key\n"
+
+
+def test_codex_executor_reuses_dependencies_only_with_matching_marker(
+    monkeypatch, tmp_path
+):
+    adapter = CodexExecutorAdapter(str(tmp_path))
+    worktree = tmp_path / "worktree"
+    (worktree / "node_modules").mkdir(parents=True)
+    (worktree / ".sacm-dependency-cache-key").write_text("npm-key\n")
+    cache = SimpleNamespace(
+        manager="npm",
+        cache_key="npm-key",
+        environment={"npm_config_cache": "/safe/npm-cache"},
+        install_command=["npm", "ci", "--prefer-offline"],
+    )
+    calls = []
+    monkeypatch.setattr(adapter.repository, "create_worktree", lambda branch: str(worktree))
+    monkeypatch.setattr(adapter.repository, "dependency_cache", lambda path: cache)
+    monkeypatch.setattr(
+        "sacm.adapters.codex_executor_adapter.RepositoryAdapter.get_diff",
+        lambda self: "",
+    )
+
+    def fake_run(command, cwd, timeout, **kwargs):
+        calls.append(command)
+        return {
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+            "events": [],
+            "duration_ms": 1,
+        }
+
+    monkeypatch.setattr(adapter, "_run", fake_run)
+
+    result = adapter.execute("task-1", "implement", [])
+
+    assert calls[0][0:2] == ["codex", "exec"]
+    assert result["dependency_setup"] is None
 
 
 def test_codex_executor_preserves_configurable_copilot_execution(
