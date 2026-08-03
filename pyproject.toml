@@ -75,6 +75,7 @@ dev = [
 [project.scripts]
 sacm = "cli.main:app"
 sacm-mcp = "sacm.mcp_server:main"
+sacm-worker = "apps.worker.main:main"
 sacm-temporal-worker = "sacm.workflows.temporal_worker:main"
 sacm-migrate = "sacm.migrate:main"
 sacm-customer-executor = "sacm.customer_executor.cli:app"

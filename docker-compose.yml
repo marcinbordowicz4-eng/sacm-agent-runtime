@@ -39,6 +39,39 @@ services:
       - ${SACM_HOST_WORKTREE_ROOT:-./worktrees}:${SACM_CONTAINER_WORKTREE_ROOT:-/worktrees}:rw
       - router_state:/app/.sacm/state
 
+  worker:
+    build: .
+    command: ["sacm-worker"]
+    restart: unless-stopped
+    environment:
+      SACM_ENVIRONMENT: ${SACM_ENVIRONMENT:-development}
+      DATABASE_URL: postgresql+psycopg2://sacm:${SACM_POSTGRES_PASSWORD:-sacm-local-only}@postgres:5432/sacm
+      REDIS_URL: redis://redis:6379
+      SACM_OTEL_ENABLED: ${SACM_OTEL_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      SACM_MLFLOW_ENABLED: ${SACM_MLFLOW_ENABLED:-false}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      SACM_OPA_URL: http://opa:8181
+      SACM_OPA_FAIL_CLOSED: "true"
+      SACM_WORKFLOW_BACKEND: ${SACM_WORKFLOW_BACKEND:-local}
+      SACM_MAX_AGENT_STEPS: ${SACM_MAX_AGENT_STEPS:-30}
+      SACM_CONTEXT_AGENT_MAX_STEPS: ${SACM_CONTEXT_AGENT_MAX_STEPS:-12}
+      SACM_CODE_EXECUTOR: ${SACM_CODE_EXECUTOR:-copilot}
+      SACM_HOST_REPOSITORY_ROOT: ${SACM_HOST_REPOSITORY_ROOT:-./repositories}
+      SACM_REPOSITORY_ROOT: ${SACM_CONTAINER_REPOSITORY_ROOT:-/repositories}
+      SACM_WORKTREE_ROOT: ${SACM_CONTAINER_WORKTREE_ROOT:-/worktrees}
+      SACM_STATE_ROOT: /app/.sacm/state
+      GH_CONFIG_DIR: /app/.sacm/state/gh
+      CODEX_HOME: /app/.sacm/state/codex
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - ${SACM_HOST_REPOSITORY_ROOT:-./repositories}:${SACM_CONTAINER_REPOSITORY_ROOT:-/repositories}:rw
+      - ${SACM_HOST_WORKTREE_ROOT:-./worktrees}:${SACM_CONTAINER_WORKTREE_ROOT:-/worktrees}:rw
+      - router_state:/app/.sacm/state
+
   temporal-worker:
     build: .
     command: ["sacm-temporal-worker"]
