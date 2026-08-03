@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 
-from sacm.core.run_service import RunService
 from sacm.core.lifecycle_metric_service import LifecycleMetricService
+from sacm.core.run_service import RunService
 from sacm.core.workflow_backend import LocalWorkflowBackend
 from sacm.core.workflow_queue_service import WorkflowQueueService
 from sacm.schemas.run import RunCreate

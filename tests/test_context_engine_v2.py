@@ -2,8 +2,8 @@ import hashlib
 
 from sacm.agents.claude_reasoner import ClaudeReasonerAgent
 from sacm.core.application_context_service import ApplicationContextService
-from sacm.core.context_compiler import ContextCompiler
 from sacm.core.context_briefing_service import ContextBriefingService
+from sacm.core.context_compiler import ContextCompiler
 from sacm.core.context_engine_service import ContextEngineService
 from sacm.core.task_intake_service import TaskIntakeService
 from sacm.infrastructure.db.models import ContextEvent, Run

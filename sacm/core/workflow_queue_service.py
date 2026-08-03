@@ -5,8 +5,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from sacm.core.local_workflow import LocalWorkflow
 from sacm.core.lifecycle_metric_service import LifecycleMetricService
+from sacm.core.local_workflow import LocalWorkflow
 from sacm.core.run_service import RunService
 from sacm.infrastructure.db.models import WorkflowJob
 

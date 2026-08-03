@@ -1,7 +1,7 @@
 import os
 import re
 from collections import defaultdict
-from typing import Any, Literal
+from typing import Any
 
 from sqlalchemy.orm import Session
 

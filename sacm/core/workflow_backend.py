@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session
 
 from sacm.core.execution_plane_service import ExecutionPlaneService
 from sacm.core.external_agent_service import ExternalAgentService
-from sacm.core.local_workflow import LocalWorkflow
 from sacm.core.run_service import RunService
 from sacm.infrastructure.db.models import Project
 from sacm.schemas.contracts import AgentTaskV1, ExternalAgentStepCreate
