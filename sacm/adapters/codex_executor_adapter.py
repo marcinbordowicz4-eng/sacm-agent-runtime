@@ -429,20 +429,63 @@ class CodexExecutorAdapter:
             if not isinstance(data, dict):
                 data = {}
             payload = event.get("usage") or data.get("usage")
-            if not isinstance(payload, dict):
+            if isinstance(payload, dict):
+                input_tokens = payload.get(
+                    "input_tokens", payload.get("prompt_tokens")
+                )
+                output_tokens = payload.get(
+                    "output_tokens", payload.get("completion_tokens", 0)
+                )
+                if isinstance(input_tokens, int) and isinstance(output_tokens, int):
+                    model = event.get("model") or data.get("model") or "unknown"
+                    usage_records.append(
+                        {
+                            "provider": provider,
+                            "model": str(model),
+                            "operation": "code_execution",
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                        }
+                    )
                 continue
-            input_tokens = payload.get("input_tokens", payload.get("prompt_tokens"))
-            output_tokens = payload.get("output_tokens", payload.get("completion_tokens", 0))
-            if not isinstance(input_tokens, int) or not isinstance(output_tokens, int):
-                continue
-            model = event.get("model") or data.get("model") or "unknown"
-            usage_records.append(
-                {
-                    "provider": provider,
-                    "model": str(model),
-                    "operation": "code_execution",
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                }
-            )
+
+            # Copilot CLI JSONL reports completion tokens on assistant messages
+            # and subscription usage in a separate session checkpoint.
+            if event.get("type") == "assistant.message":
+                output_tokens = data.get("outputTokens")
+                if isinstance(output_tokens, int):
+                    usage_records.append(
+                        {
+                            "provider": provider,
+                            "model": str(data.get("model") or "unknown"),
+                            "operation": "code_execution",
+                            "input_tokens": 0,
+                            "output_tokens": output_tokens,
+                        }
+                    )
+            elif event.get("type") == "session.usage_checkpoint":
+                premium_requests = data.get("totalPremiumRequests")
+                total_nano_aiu = data.get("totalNanoAiu")
+                if isinstance(premium_requests, int) or isinstance(
+                    total_nano_aiu, int
+                ):
+                    usage_records.append(
+                        {
+                            "provider": provider,
+                            "model": "subscription",
+                            "operation": "code_execution",
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            **(
+                                {"premium_requests": premium_requests}
+                                if isinstance(premium_requests, int)
+                                else {}
+                            ),
+                            **(
+                                {"total_nano_aiu": total_nano_aiu}
+                                if isinstance(total_nano_aiu, int)
+                                else {}
+                            ),
+                        }
+                    )
         return usage_records

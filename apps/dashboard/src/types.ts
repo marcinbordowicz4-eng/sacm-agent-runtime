@@ -492,6 +492,8 @@ export type LifecycleMetrics = {
     output_tokens: number
     estimated_cost_usd: number
     cost_estimation_available: boolean
+    premium_requests: number
+    total_nano_aiu: number
     tool_execution_count: number
     tool_duration_ms: number
     failed_tool_execution_count: number

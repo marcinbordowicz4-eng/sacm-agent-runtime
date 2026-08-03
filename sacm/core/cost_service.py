@@ -104,6 +104,8 @@ class CostService:
                 "output_tokens": 0,
                 "estimated_cost_usd": 0.0,
                 "cost_estimation_available": False,
+                "premium_requests": 0,
+                "total_nano_aiu": 0,
             }
         )
         for event in events:
@@ -125,6 +127,16 @@ class CostService:
                 if isinstance(cost, (int, float)) and not isinstance(cost, bool):
                     total["estimated_cost_usd"] += cost
                     total["cost_estimation_available"] = True
+                premium_requests = record.get("premium_requests", 0)
+                if isinstance(premium_requests, int) and not isinstance(
+                    premium_requests, bool
+                ):
+                    total["premium_requests"] += premium_requests
+                total_nano_aiu = record.get("total_nano_aiu", 0)
+                if isinstance(total_nano_aiu, int) and not isinstance(
+                    total_nano_aiu, bool
+                ):
+                    total["total_nano_aiu"] += total_nano_aiu
 
         entries = [
             {"provider": provider, "model": model, **values}
@@ -147,6 +159,8 @@ class CostService:
             "cost_estimation_available": any(
                 item["cost_estimation_available"] for item in entries
             ),
+            "premium_requests": sum(item["premium_requests"] for item in entries),
+            "total_nano_aiu": sum(item["total_nano_aiu"] for item in entries),
             "tool_execution_count": len(tool_executions),
             "tool_duration_ms": sum(record["duration_ms"] for record in tool_executions),
             "failed_tool_execution_count": sum(
