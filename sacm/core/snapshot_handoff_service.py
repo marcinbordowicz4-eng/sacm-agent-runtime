@@ -1,25 +1,58 @@
 import hashlib
 import json
+import logging
 import os
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Protocol
 
+from redis.exceptions import RedisError
 from sqlalchemy.orm import Session
 
 from sacm.core.run_service import RunService
 from sacm.core.snapshot_service import SnapshotService
 from sacm.infrastructure.db.models import SnapshotHandoff, SnapshotScopeLease
+from sacm.infrastructure.redis.redis_client import RedisClient
 
+LOGGER = logging.getLogger(__name__)
 
 class SnapshotHandoffError(ValueError):
     pass
 
 
+class HandoffNotifier(Protocol):
+    def publish(self, handoff: SnapshotHandoff) -> None: ...
+
+
+class RedisHandoffNotifier:
+    def __init__(self, client: RedisClient, *, ttl_seconds: int = 3600) -> None:
+        if ttl_seconds <= 0:
+            raise ValueError("Snapshot handoff cache TTL must be positive.")
+        self.client = client
+        self.ttl_seconds = ttl_seconds
+
+    def publish(self, handoff: SnapshotHandoff) -> None:
+        event = {
+            "schema_version": "snapshot-handoff-event/v1",
+            "handoff_id": handoff.id,
+            "run_id": handoff.run_id,
+            "status": handoff.status,
+            "manifest_hash": handoff.manifest_hash,
+            "manifest": handoff.manifest,
+        }
+        self.client.set_json(
+            f"sacm:snapshot-handoff:{handoff.id}", event, self.ttl_seconds
+        )
+        self.client.publish_json(f"sacm:run:{handoff.run_id}:handoffs", event)
+
+
 class SnapshotHandoffService:
     """Hands off only immutable checkpoints and fences stale scope owners."""
 
-    def __init__(self, db: Session) -> None:
+    def __init__(
+        self, db: Session, *, notifier: HandoffNotifier | None = None
+    ) -> None:
         self.db = db
+        self.notifier = notifier or self._configured_notifier()
 
     def create(
         self,
@@ -75,6 +108,7 @@ class SnapshotHandoffService:
         self.db.add(handoff)
         self.db.commit()
         self.db.refresh(handoff)
+        self._notify(handoff)
         return handoff
 
     def accept(self, handoff_id: str, *, evaluator: str) -> SnapshotHandoff:
@@ -91,6 +125,7 @@ class SnapshotHandoffService:
         handoff.accepted_at = datetime.utcnow()
         self.db.commit()
         self.db.refresh(handoff)
+        self._notify(handoff)
         return handoff
 
     def claim_scope(
@@ -153,6 +188,26 @@ class SnapshotHandoffService:
         return hashlib.sha256(
             json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
+
+    @staticmethod
+    def _configured_notifier() -> HandoffNotifier | None:
+        if os.getenv("SACM_HANDOFF_REDIS_ENABLED", "false").lower() != "true":
+            return None
+        return RedisHandoffNotifier(
+            RedisClient(),
+            ttl_seconds=int(os.getenv("SACM_HANDOFF_REDIS_TTL_SECONDS", "3600")),
+        )
+
+    def _notify(self, handoff: SnapshotHandoff) -> None:
+        if self.notifier is None:
+            return
+        try:
+            self.notifier.publish(handoff)
+        except RedisError:
+            LOGGER.exception(
+                "Snapshot handoff %s was persisted but not published to Redis.",
+                handoff.id,
+            )
 
     @staticmethod
     def _require_quorum(notes: list[dict[str, Any]], evaluator: str) -> None:

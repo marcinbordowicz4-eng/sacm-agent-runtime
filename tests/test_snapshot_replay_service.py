@@ -100,6 +100,38 @@ def test_accepted_handoff_fences_stale_scope_owner(db):
         )
 
 
+def test_handoff_notifies_only_after_durable_create_and_accept(db):
+    class RecordingNotifier:
+        def __init__(self):
+            self.statuses = []
+
+        def publish(self, handoff):
+            self.statuses.append(handoff.status)
+
+    run = _run(db)
+    snapshot = SnapshotService(db).list_snapshots(run.id)[0]
+    notifier = RecordingNotifier()
+    service = SnapshotHandoffService(db, notifier=notifier)
+    handoff = service.create(
+        run.id,
+        snapshot.id,
+        base_sha="a" * 40,
+        head_sha="b" * 40,
+        context_snapshot_id="context-1",
+        closed_subtasks=[],
+        open_subtasks=["implementation"],
+        changed_symbols=[],
+        quorum_notes=[
+            {"role": "reviewer", "status": "approved"},
+            {"role": "tester", "status": "approved"},
+        ],
+        evidence_hashes=[],
+    )
+    service.accept(handoff.id, evaluator="quorum")
+
+    assert notifier.statuses == ["PENDING", "ACCEPTED"]
+
+
 def test_restore_is_distinct_from_failed_run_resume(db):
     run, step, checkpoint = _failed_run_with_checkpoint(db)
 
