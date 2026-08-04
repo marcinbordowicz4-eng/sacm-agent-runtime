@@ -7,9 +7,13 @@ import signal
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TextIO, cast
 
-from sacm.adapters.repository_adapter import DependencyCache, RepositoryAdapter
+from sacm.adapters.repository_adapter import (
+    DependencyCache,
+    RepositoryAdapter,
+    RepositoryOperationError,
+)
 from sacm.core.verification_execution import (
     resource_failure_reason,
     sequential_retry_command,
@@ -67,7 +71,11 @@ class CodexExecutorAdapter:
                 },
                 "dependency_setup": dependency_setup,
             }
-        if dependency_cache and dependency_cache_status in {"installed", "shared"}:
+        if dependency_cache and dependency_cache_status in {
+            "installed",
+            "installed_uncached",
+            "shared",
+        }:
             self._write_dependency_marker(worktree_path, dependency_cache.cache_key)
         command = (
             [
@@ -158,12 +166,19 @@ class CodexExecutorAdapter:
                     worktree_path, dependency_cache, telemetry_sink
                 )
                 if dependency_setup["returncode"] == 0:
-                    self.repository.publish_node_dependencies(
-                        worktree_path, dependency_cache
-                    )
-                    self._emit_dependency_cache_telemetry(
-                        telemetry_sink, dependency_cache, "published"
-                    )
+                    try:
+                        self.repository.publish_node_dependencies(
+                            worktree_path, dependency_cache
+                        )
+                    except RepositoryOperationError:
+                        self._emit_dependency_cache_telemetry(
+                            telemetry_sink, dependency_cache, "publish_failed"
+                        )
+                        return dependency_setup, "installed_uncached"
+                    else:
+                        self._emit_dependency_cache_telemetry(
+                            telemetry_sink, dependency_cache, "published"
+                        )
                 return (
                     dependency_setup,
                     "installed"
@@ -483,7 +498,8 @@ class CodexExecutorAdapter:
                 if time.monotonic() - process_exited_at >= 1.0:
                     break
             for key, _ in streams.select(min(remaining, 0.1)):
-                chunk = os.read(key.fileobj.fileno(), 4_096)
+                stream = cast(TextIO, key.fileobj)
+                chunk = os.read(stream.fileno(), 4_096)
                 if not chunk:
                     streams.unregister(key.fileobj)
                     continue
@@ -504,7 +520,7 @@ class CodexExecutorAdapter:
                             on_json_event(event)
         for key in list(streams.get_map().values()):
             streams.unregister(key.fileobj)
-            key.fileobj.close()
+            cast(TextIO, key.fileobj).close()
         process.wait()
         full_stdout = "".join(stdout_chunks)
         stderr = "".join(stderr_chunks)
