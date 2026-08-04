@@ -7,6 +7,10 @@ from sqlalchemy.pool import StaticPool
 from apps.api.main import app
 from sacm.core.local_workflow import LocalWorkflow
 from sacm.core.run_service import RunService
+from sacm.core.snapshot_handoff_service import (
+    SnapshotHandoffError,
+    SnapshotHandoffService,
+)
 from sacm.core.snapshot_service import SnapshotService
 from sacm.infrastructure.db.models import Base, Run, RunReplay, RunSnapshot
 from sacm.infrastructure.db.session import get_db
@@ -57,6 +61,40 @@ def test_snapshot_checksum_corruption_is_rejected(db):
 
     with pytest.raises(ValueError, match="checksum"):
         SnapshotService(db).validate(run, snapshot)
+
+
+def test_accepted_handoff_fences_stale_scope_owner(db):
+    run = _run(db)
+    snapshot = SnapshotService(db).list_snapshots(run.id)[0]
+    service = SnapshotHandoffService(db)
+    handoff = service.create(
+        run.id,
+        snapshot.id,
+        base_sha="a" * 40,
+        head_sha="b" * 40,
+        context_snapshot_id="context-1",
+        closed_subtasks=["plan"],
+        open_subtasks=["PaymentService.create"],
+        changed_symbols=["PaymentService.create"],
+        quorum_notes=[{"role": "reviewer", "status": "approved"}],
+        evidence_hashes=["c" * 64],
+    )
+    accepted = service.accept(handoff.id, evaluator="quorum")
+    first = service.claim_scope(
+        accepted.id, scope_key="PaymentService.create", owner="agent-a", lease_seconds=1
+    )
+    first_token = first.fencing_token
+    first.expires_at = first.expires_at.replace(year=2000)
+    db.commit()
+    second = service.claim_scope(
+        accepted.id, scope_key="PaymentService.create", owner="agent-b"
+    )
+
+    assert second.fencing_token == first_token + 1
+    with pytest.raises(SnapshotHandoffError, match="stale"):
+        service.validate_fencing(
+            first.id, owner="agent-a", fencing_token=first_token
+        )
 
 
 def test_restore_is_distinct_from_failed_run_resume(db):

@@ -1337,6 +1337,53 @@ class RunReplay(Base):
     source_snapshot: Mapped["RunSnapshot"] = relationship("RunSnapshot")
 
 
+class SnapshotHandoff(Base):
+    __tablename__ = "snapshot_handoffs"
+    __table_args__ = (
+        UniqueConstraint(
+            "snapshot_id", "manifest_hash", name="uq_snapshot_handoff_manifest"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id"), nullable=False, index=True
+    )
+    snapshot_id: Mapped[str] = mapped_column(
+        ForeignKey("run_snapshots.id"), nullable=False, index=True
+    )
+    manifest: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    manifest_hash: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="PENDING", index=True
+    )
+    accepted_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class SnapshotScopeLease(Base):
+    __tablename__ = "snapshot_scope_leases"
+    __table_args__ = (
+        UniqueConstraint("run_id", "scope_key", name="uq_snapshot_scope_lease"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id"), nullable=False, index=True
+    )
+    scope_key: Mapped[str] = mapped_column(String, nullable=False)
+    owner: Mapped[str] = mapped_column(String, nullable=False)
+    fencing_token: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    handoff_id: Mapped[str | None] = mapped_column(
+        ForeignKey("snapshot_handoffs.id"), nullable=True, index=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
 class EvidencePack(Base):
     __tablename__ = "evidence_packs"
 
