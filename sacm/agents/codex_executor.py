@@ -70,6 +70,11 @@ class CodexExecutorAgent(Agent):
                     "executor": result["executor"],
                     "provider": result["provider"],
                     "dependency_cache": result["dependency_cache"],
+                    **(
+                        {"candidate_selection": result["candidate_selection"]}
+                        if result.get("candidate_selection")
+                        else {}
+                    ),
                 }
             ]
             + [
@@ -88,6 +93,16 @@ class CodexExecutorAgent(Agent):
                     "commands": result["verification"],
                 },
                 {"type": "codex_log", "content": result["codex"]["stdout"]},
+                *(
+                    [
+                        {
+                            "type": "code_candidate_selection",
+                            **result["candidate_selection"],
+                        }
+                    ]
+                    if result.get("candidate_selection")
+                    else []
+                ),
                 *usage,
                 *tool_execution,
             ],

@@ -6,6 +6,7 @@ import shlex
 import signal
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, TextIO, cast
 
@@ -36,9 +37,56 @@ class CodexExecutorAdapter:
         *,
         telemetry_sink: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
+        candidate_count = self._candidate_count()
+        if candidate_count == 1:
+            return self._execute_candidate(
+                task_id,
+                prompt,
+                verification_commands,
+                branch_name=self._branch_name(task_id),
+                telemetry_sink=telemetry_sink,
+            )
+        with ThreadPoolExecutor(
+            max_workers=candidate_count,
+            thread_name_prefix="sacm-code-candidate",
+        ) as pool:
+            futures = [
+                pool.submit(
+                    self._execute_candidate,
+                    task_id,
+                    self._candidate_prompt(prompt, index, candidate_count),
+                    verification_commands,
+                    branch_name=self._candidate_branch_name(
+                        task_id, index, candidate_count
+                    ),
+                    telemetry_sink=telemetry_sink,
+                )
+                for index in range(1, candidate_count + 1)
+            ]
+            candidates = [future.result() for future in futures]
+        selected, assessments = self._select_candidate(candidates)
+        return {
+            **selected,
+            "candidates": candidates,
+            "candidate_selection": {
+                "schema_version": "code-candidate-selection/v1",
+                "strategy": "isolated-worktree-validated-candidate",
+                "selected_branch_name": selected["branch_name"],
+                "assessments": assessments,
+            },
+        }
+
+    def _execute_candidate(
+        self,
+        task_id: str,
+        prompt: str,
+        verification_commands: list[str],
+        *,
+        branch_name: str,
+        telemetry_sink: Callable[[dict[str, Any]], None] | None,
+    ) -> dict[str, Any]:
         executor = os.getenv("SACM_CODE_EXECUTOR", "codex")
         provider = "copilot" if executor == "copilot" else "codex"
-        branch_name = self._branch_name(task_id)
         worktree_path = self.repository.create_worktree(branch_name)
         dependency_cache = self.repository.dependency_cache(worktree_path)
         dependency_environment = (
@@ -322,6 +370,94 @@ class CodexExecutorAdapter:
         if not normalized:
             raise ValueError("task_id must contain at least one alphanumeric character.")
         return f"sacm/{normalized[:48]}"
+
+    @classmethod
+    def _candidate_branch_name(
+        cls, task_id: str, candidate_index: int, candidate_count: int
+    ) -> str:
+        if candidate_count == 1:
+            return cls._branch_name(task_id)
+        return f"{cls._branch_name(task_id)}-candidate-{candidate_index}"
+
+    @staticmethod
+    def _candidate_count() -> int:
+        value = os.getenv("SACM_CODEX_CANDIDATE_COUNT")
+        if value is None:
+            mode = os.getenv("SACM_CODE_EXECUTION_MODE", "fast").lower()
+            if mode == "fast":
+                return 1
+            if mode == "competitive":
+                return 3
+            if mode == "guarded":
+                return 1
+            raise ValueError(
+                "SACM_CODE_EXECUTION_MODE must be fast, guarded, or competitive."
+            )
+        try:
+            count = int(value)
+        except ValueError as exc:
+            raise ValueError("SACM_CODEX_CANDIDATE_COUNT must be an integer.") from exc
+        if not 1 <= count <= 8:
+            raise ValueError("SACM_CODEX_CANDIDATE_COUNT must be between 1 and 8.")
+        return count
+
+    @staticmethod
+    def _candidate_prompt(prompt: str, index: int, count: int) -> str:
+        return (
+            f"{prompt}\n\nYou are implementation candidate {index} of {count}. "
+            "Work only in your isolated worktree. Produce a complete, independently "
+            "verifiable solution; do not assume changes from other candidates."
+        )
+
+    @staticmethod
+    def _select_candidate(
+        candidates: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        assessments: list[dict[str, Any]] = []
+        eligible: list[tuple[int, dict[str, Any]]] = []
+        for index, candidate in enumerate(candidates, start=1):
+            verification = candidate["verification"]
+            reasons = []
+            if candidate["codex"]["returncode"] != 0:
+                reasons.append("implementation_failed")
+            if not verification:
+                reasons.append("missing_verification")
+            elif any(command["returncode"] != 0 for command in verification):
+                reasons.append("verification_failed")
+            if not candidate["diff"].strip():
+                reasons.append("empty_diff")
+            eligible_candidate = not reasons
+            score = (
+                100
+                - min(len(candidate["diff"]) // 1_000, 20)
+                - min(
+                    sum(command["duration_ms"] for command in verification) // 60_000,
+                    10,
+                )
+            )
+            assessment = {
+                "candidate_index": index,
+                "branch_name": candidate["branch_name"],
+                "eligible": eligible_candidate,
+                "score": score if eligible_candidate else 0,
+                "disqualification_reasons": reasons,
+            }
+            assessments.append(assessment)
+            if eligible_candidate:
+                eligible.append((index, candidate))
+        if not eligible:
+            raise RuntimeError(
+                "No code candidate passed implementation, verification, and diff gates."
+            )
+        selected_index, selected = min(
+            eligible,
+            key=lambda item: (
+                -assessments[item[0] - 1]["score"],
+                item[0],
+            ),
+        )
+        assert assessments[selected_index - 1]["eligible"]
+        return selected, assessments
 
     @staticmethod
     def _dependency_setup_timeout() -> int:
