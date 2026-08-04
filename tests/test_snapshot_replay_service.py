@@ -76,7 +76,10 @@ def test_accepted_handoff_fences_stale_scope_owner(db):
         closed_subtasks=["plan"],
         open_subtasks=["PaymentService.create"],
         changed_symbols=["PaymentService.create"],
-        quorum_notes=[{"role": "reviewer", "status": "approved"}],
+        quorum_notes=[
+            {"role": "reviewer", "status": "approved"},
+            {"role": "tester", "status": "approved"},
+        ],
         evidence_hashes=["c" * 64],
     )
     accepted = service.accept(handoff.id, evaluator="quorum")

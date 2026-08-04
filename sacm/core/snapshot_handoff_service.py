@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -84,6 +85,7 @@ class SnapshotHandoffService:
             return handoff
         if handoff.status != "PENDING":
             raise SnapshotHandoffError(f"Handoff cannot be accepted from {handoff.status}.")
+        self._require_quorum(handoff.manifest["quorum_notes"], evaluator)
         handoff.status = "ACCEPTED"
         handoff.accepted_by = evaluator
         handoff.accepted_at = datetime.utcnow()
@@ -151,3 +153,26 @@ class SnapshotHandoffService:
         return hashlib.sha256(
             json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
+
+    @staticmethod
+    def _require_quorum(notes: list[dict[str, Any]], evaluator: str) -> None:
+        required = int(os.getenv("SACM_HANDOFF_QUORUM_SIZE", "2"))
+        if required < 1:
+            raise SnapshotHandoffError("SACM_HANDOFF_QUORUM_SIZE must be positive.")
+        approvers = {
+            str(note["role"])
+            for note in notes
+            if note.get("status") == "approved" and note.get("role") != evaluator
+        }
+        blocking = [
+            note
+            for note in notes
+            if note.get("severity") in {"high", "critical"}
+            and note.get("status") != "resolved"
+        ]
+        if blocking:
+            raise SnapshotHandoffError("Quorum contains unresolved blocking findings.")
+        if len(approvers) < required:
+            raise SnapshotHandoffError(
+                f"Handoff requires {required} independent quorum approvals."
+            )
