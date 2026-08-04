@@ -163,6 +163,28 @@ def test_outcome_signature_changes_when_patch_changes(db):
     ) != service.outcome_signature(second.agent_name, second, verification)
 
 
+def test_outcome_signature_detects_no_progress_across_agents(db):
+    service = TaskRecoveryService(db)
+    verification = _verification()
+    first = _result().model_copy(
+        update={
+            "agent_name": "CloudExecutor",
+            "summary": "Configured verification command failed.",
+            "next_state_hint": "debugging",
+        }
+    )
+    second = first.model_copy(
+        update={
+            "agent_name": "CodexExecutor",
+            "summary": "Copilot execution failed on branch sacm/task-1.",
+        }
+    )
+
+    assert service.outcome_signature(
+        first.agent_name, first, verification
+    ) == service.outcome_signature(second.agent_name, second, verification)
+
+
 def test_verification_failure_selects_targeted_repair(db):
     service = TaskRecoveryService(db)
     failure = service.diagnose(

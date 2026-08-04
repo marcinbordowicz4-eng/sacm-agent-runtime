@@ -17,6 +17,7 @@ from sacm.core.observability import ObservabilityService
 from sacm.core.outcome_router_service import OutcomeRouterService
 from sacm.core.router import RouterService
 from sacm.core.state_service import StateService
+from sacm.core.task_execution_assessment_service import TaskExecutionAssessmentService
 from sacm.core.task_recovery_service import TaskRecoveryService
 from sacm.core.task_run_lease_service import TaskRunLeaseService
 from sacm.core.task_service import TaskService
@@ -43,6 +44,7 @@ class Orchestrator:
         self.feedback_service = FeedbackService(db, self.router_service)
         self.observability = ObservabilityService()
         self.task_recovery = TaskRecoveryService(db)
+        self.task_execution_assessment = TaskExecutionAssessmentService()
         self.outcome_router = OutcomeRouterService(
             db,
             registry=self.agent_registry,
@@ -59,6 +61,10 @@ class Orchestrator:
         task = self.task_service.get(task_id)
         if not task:
             raise ValueError(f"Task {task_id} not found")
+        assessment = self.task_execution_assessment.assess(
+            task.description, requested_max_steps=max_steps
+        )
+        max_steps = assessment.max_steps
 
         lease_service = TaskRunLeaseService(self.db)
         owner_token = lease_service.acquire(task_id)
@@ -74,6 +80,15 @@ class Orchestrator:
                 started_at=started_at,
                 task_status=task.status,
             )
+            self.event_service.save(
+                task_id,
+                "task_execution_assessment",
+                {
+                    "run_id": run_id,
+                    "schema_version": "task-execution-assessment/v1",
+                    **assessment.model_dump(),
+                },
+            )
             response = self._run_task_locked(
                 task_id,
                 max_steps=max_steps,
@@ -82,6 +97,7 @@ class Orchestrator:
                 lease_service=lease_service,
                 owner_token=owner_token,
                 started_at=started_at,
+                include_test_command=assessment.include_test_command,
             )
             self._save_progress(
                 task_id,
@@ -125,6 +141,7 @@ class Orchestrator:
         lease_service: TaskRunLeaseService,
         owner_token: str,
         started_at: float,
+        include_test_command: bool,
     ) -> dict:
         task = self.task_service.get(task_id)
         if not task:
@@ -362,6 +379,7 @@ class Orchestrator:
                         }
                     ),
                 },
+                include_test_command=include_test_command,
             )
             if active_recovery:
                 decision = active_recovery["decision"]

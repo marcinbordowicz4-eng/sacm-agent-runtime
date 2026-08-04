@@ -76,6 +76,31 @@ constraints:
     assert "Never write to main." in context.constraints
 
 
+def test_compile_omits_broad_test_command_for_focused_verification(tmp_path):
+    (tmp_path / ".sacm.yaml").write_text(
+        """
+version: sacm/v1
+commands:
+  build: npm run typecheck
+  test: npm test
+""",
+        encoding="utf-8",
+    )
+    task = make_task()
+    task.target_repo_path = str(tmp_path)
+
+    context = ContextCompiler().compile(
+        task=task,
+        agent=ClaudeReasonerAgent(),
+        history=[],
+        memory=[],
+        include_test_command=False,
+    )
+
+    assert context.build_command == "npm run typecheck"
+    assert context.test_command is None
+
+
 def test_repository_config_rejects_multiline_command(tmp_path):
     (tmp_path / ".sacm.yaml").write_text(
         "version: sacm/v1\ncommands:\n  test: |\n    npm test\n    rm -rf /\n",

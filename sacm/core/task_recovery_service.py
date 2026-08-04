@@ -27,12 +27,14 @@ class TaskRecoveryService:
         result: AgentResult,
         verification: VerificationMatrixV2,
     ) -> str:
+        del agent_name
         payload = {
-            "agent_name": agent_name,
-            "summary": result.summary,
-            "actions": result.actions,
-            "artifacts": result.artifacts,
-            "next_state_hint": result.next_state_hint,
+            "patches": [
+                artifact.get("content")
+                for artifact in result.artifacts
+                if artifact.get("type") == "diff"
+                and isinstance(artifact.get("content"), str)
+            ],
             "blocking_reasons": verification.blocking_reasons,
             "verification": {
                 "build_status": verification.build_status,

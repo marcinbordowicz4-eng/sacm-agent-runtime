@@ -20,6 +20,7 @@ class ContextCompiler:
         memory: list[MemoryChunk],
         context_package: ContextPackageV2 | None = None,
         briefing: dict[str, Any] | None = None,
+        include_test_command: bool = True,
     ) -> AgentContext:
         repository_config = load_repository_config(task.target_repo_path)
         task_text = self._trim(task.description, self.token_budget)
@@ -83,7 +84,9 @@ class ContextCompiler:
             constraints=constraints,
             previous_findings=previous_findings,
             test_command=(
-                repository_config.commands.test if repository_config else None
+                repository_config.commands.test
+                if repository_config and include_test_command
+                else None
             ),
             build_command=(
                 repository_config.commands.build if repository_config else None
