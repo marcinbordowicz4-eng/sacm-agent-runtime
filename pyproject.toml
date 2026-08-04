@@ -43,7 +43,8 @@ agents = [
     "openai-agents>=0.0.16",
 ]
 mlflow = [
-    "mlflow>=2.14.0",
+    "mlflow>=3.11.0",
+    "pyarrow>=23.0.1",
 ]
 temporal = [
     "temporalio>=1.7.0",
