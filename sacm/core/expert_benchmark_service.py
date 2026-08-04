@@ -8,7 +8,7 @@ from sacm.schemas.expert_benchmark import ExpertBenchmarkAssessmentV1
 
 class ExpertBenchmarkService:
     def __init__(self, state_root: str | None = None) -> None:
-        root = state_root or os.getenv("SACM_STATE_ROOT", ".sacm/state")
+        root = state_root or os.getenv("SACM_STATE_ROOT") or ".sacm/state"
         self.path = Path(root).expanduser() / "expert-benchmark-assessment.json"
 
     def get(self) -> ExpertBenchmarkAssessmentV1 | None:
