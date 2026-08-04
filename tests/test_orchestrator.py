@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from sacm.agents.mlflow_experiment_agent import MLflowExperimentAgent
 from sacm.agents.otel_cost_agent import OpenTelemetryCostAgent
 from sacm.core.event_service import EventService
+from sacm.core.task_execution_assessment_service import TaskExecutionAssessmentService
 from sacm.core.task_run_lease_service import (
     TaskLeaseHeartbeatError,
     TaskRunLeaseService,
@@ -218,6 +219,7 @@ def test_orchestrator_records_progress_refreshes_and_releases_lease(db):
     orchestrator.db = db
     orchestrator.task_service = TaskService(db)
     orchestrator.event_service = EventService(db)
+    orchestrator.task_execution_assessment = TaskExecutionAssessmentService()
 
     def fake_locked(
         self,
@@ -287,6 +289,7 @@ def test_orchestrator_releases_lease_and_records_failure(db):
     orchestrator.db = db
     orchestrator.task_service = TaskService(db)
     orchestrator.event_service = EventService(db)
+    orchestrator.task_execution_assessment = TaskExecutionAssessmentService()
 
     def fail_locked(self, task_id, **kwargs):
         raise RuntimeError("executor failed")
@@ -314,6 +317,7 @@ def test_orchestrator_rejects_competing_run(db):
     orchestrator = Orchestrator.__new__(Orchestrator)
     orchestrator.db = db
     orchestrator.task_service = TaskService(db)
+    orchestrator.task_execution_assessment = TaskExecutionAssessmentService()
 
     with pytest.raises(RuntimeError, match="active orchestrator run"):
         orchestrator.run_task("task-1")
@@ -343,6 +347,7 @@ def test_orchestrator_repairs_false_done_when_no_verification_completed(db):
         lease_service=leases,
         owner_token=owner,
         started_at=0.0,
+        include_test_command=True,
     )
 
     assert result["status"] == "testing"
