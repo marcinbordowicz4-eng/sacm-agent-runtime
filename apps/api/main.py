@@ -10,6 +10,7 @@ from apps.api.routes import (
     application_context,
     approvals,
     benchmarks,
+    cognitive_state,
     context,
     execution_plan,
     execution_plane,
@@ -135,6 +136,12 @@ app.include_router(
     application_context.router,
     prefix="/v1",
     tags=["application-context"],
+    dependencies=authenticated_dependencies,
+)
+app.include_router(
+    cognitive_state.router,
+    prefix="/v1",
+    tags=["cognitive-state"],
     dependencies=authenticated_dependencies,
 )
 app.include_router(

@@ -773,6 +773,161 @@ class Project(Base):
     runs: Mapped[list["Run"]] = relationship("Run", back_populates="project")
 
 
+class CognitiveEvent(Base):
+    """Append-only project history used to reconstruct cognitive state."""
+
+    __tablename__ = "cognitive_events"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id"), nullable=False, index=True
+    )
+    event_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    agent_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    commit_hash: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    snapshot_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    trace_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    parent_event_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    previous_event_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    event_hash: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, index=True
+    )
+
+
+class CognitiveRelation(Base):
+    """An immutable, temporal edge in the project provenance graph."""
+
+    __tablename__ = "cognitive_relations"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "source_type",
+            "source_id",
+            "target_type",
+            "target_id",
+            "relation",
+            "created_event_id",
+            name="uq_cognitive_relation_event",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id"), nullable=False, index=True
+    )
+    source_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    source_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    target_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    target_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    relation: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    commit_hash: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    metadata_: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON, nullable=False, default=dict
+    )
+    created_event_id: Mapped[str] = mapped_column(
+        ForeignKey("cognitive_events.id"), nullable=False, index=True
+    )
+    valid_from: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, index=True
+    )
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class CognitiveSnapshot(Base):
+    """Immutable materialized project state at a Git or event boundary."""
+
+    __tablename__ = "cognitive_snapshots"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id"), nullable=False, index=True
+    )
+    commit_hash: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    snapshot_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    state: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    state_hash: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, index=True
+    )
+
+
+class CognitiveMemory(Base):
+    """Semantic memory with explicit provenance; never a relationship authority."""
+
+    __tablename__ = "cognitive_memories"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id"), nullable=False, index=True
+    )
+    memory_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[Any | None] = mapped_column(embedding_column(), nullable=True)
+    agent_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    requirement_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    decision_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    commit_hash: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    snapshot_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    importance: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.7)
+    metadata_: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON, nullable=False, default=dict
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, index=True
+    )
+
+
+class CognitiveCommitJob(Base):
+    """Durable, idempotent Git-analysis work for a project commit."""
+
+    __tablename__ = "cognitive_commit_jobs"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "commit_hash", name="uq_cognitive_commit_job_project_commit"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id"), nullable=False, index=True
+    )
+    commit_hash: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    agent_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    trace_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    semantic_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    state: Mapped[str] = mapped_column(String, nullable=False, default="QUEUED", index=True)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, index=True
+    )
+    lease_token: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, index=True
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+@event.listens_for(CognitiveEvent, "before_update")
+@event.listens_for(CognitiveEvent, "before_delete")
+@event.listens_for(CognitiveRelation, "before_update")
+@event.listens_for(CognitiveRelation, "before_delete")
+@event.listens_for(CognitiveSnapshot, "before_update")
+@event.listens_for(CognitiveSnapshot, "before_delete")
+def _prevent_cognitive_state_mutation(*_: Any) -> None:
+    raise RuntimeError("Cognitive state records are immutable.")
+
+
 class Membership(Base):
     __tablename__ = "memberships"
     __table_args__ = (

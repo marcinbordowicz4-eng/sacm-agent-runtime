@@ -3,6 +3,7 @@ import time
 
 from rich.console import Console
 
+from sacm.core.cognitive_commit_queue_service import CognitiveCommitQueueService
 from sacm.core.workflow_queue_service import WorkflowQueueService
 from sacm.infrastructure.db.session import SessionLocal
 
@@ -16,7 +17,9 @@ def main() -> None:
     while True:
         db = SessionLocal()
         try:
-            result = WorkflowQueueService(db).process_one()
+            result = CognitiveCommitQueueService(db).process_one()
+            if result is None:
+                result = WorkflowQueueService(db).process_one()
             if result:
                 console.print(result)
         finally:
