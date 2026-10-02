@@ -33,6 +33,12 @@ export type Event = {
   occurred_at: string
 }
 
+export type EventLogPage = {
+  events: Event[]
+  next_before_sequence?: number | null
+  redacted: boolean
+}
+
 export type Approval = {
   id: string
   action: string
@@ -618,6 +624,7 @@ export type DashboardProps = {
   selected?: Run
   steps: Step[]
   events: Event[]
+  eventLogHasMore: boolean
   approvals: Approval[]
   artifacts: TaskArtifact[]
   repositoryDiff?: RepositoryDiff
@@ -651,6 +658,7 @@ export type DashboardProps = {
   loading: boolean
   loadRuns: () => Promise<void>
   loadRun: (run: Run) => Promise<void>
+  loadOlderEvents: () => Promise<void>
   action: (path: string, body?: Record<string, unknown>) => Promise<void>
   createMission: (input: MissionCreateInput) => Promise<void>
   decideApproval: (approval: Approval, approve: boolean, reason: string) => Promise<void>

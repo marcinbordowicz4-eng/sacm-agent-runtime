@@ -179,7 +179,7 @@ function Journey({ props }: { props: DashboardProps }) {
 }
 
 export function MissionsPage(props: DashboardProps) {
-  const { runs, selected, context, analytics, steps, events, approvals, snapshots, executionJobs, comparison, action, loadRun, loading } = props
+  const { runs, selected, context, analytics, steps, events, approvals, snapshots, executionJobs, comparison, action, loadRun, loadOlderEvents, eventLogHasMore, loading } = props
   if (!selected) return <><PageHeader eyebrow="MISSIONS" title="Mission View" description="No authorized missions are available." /><MissingData text="Connect an authorized tenant in Settings or create a mission through the API." /></>
   const plan = context?.execution_plan
   const taskSource = context?.task.connector_type || 'Not recorded'
@@ -254,7 +254,8 @@ export function MissionsPage(props: DashboardProps) {
       {telemetry ? <>{!providerUsageAvailable && <p className="data-notice"><b>PROVIDER USAGE UNAVAILABLE</b> This executor did not emit token or cost events. SACM reports N/A rather than inferring zero usage.</p>}<dl className="metadata"><Meta label="Input tokens" value={providerUsageAvailable ? metric(telemetry.input_tokens) : 'N/A'} /><Meta label="Output tokens" value={providerUsageAvailable ? metric(telemetry.output_tokens) : 'N/A'} /><Meta label="Estimated cost" value={telemetry.cost_estimation_available ? money(telemetry.estimated_cost_usd) : 'N/A'} /><Meta label="Premium requests" value={metric(telemetry.premium_requests)} /><Meta label="Copilot AIU" value={metric(telemetry.total_nano_aiu / 1_000_000_000)} /><Meta label="Tool executions" value={metric(telemetry.tool_execution_count)} /><Meta label="Tool duration" value={`${metric(telemetry.tool_duration_ms)} ms`} /><Meta label="Failed tools" value={metric(telemetry.failed_tool_execution_count)} /></dl></> : <MissingData text="No durable usage or execution telemetry is available for this mission." />}
     </article>
     <article className="surface timeline-surface">
-      <div className="section-head"><div><p className="eyebrow">LIVE CHANGE JOURNEY</p><h2>Event timeline</h2></div><span className="count-pill">{events.length}</span></div>
+      <div className="section-head"><div><p className="eyebrow">LIVE CHANGE JOURNEY</p><h2>Event timeline</h2><p className="quiet">Payloads are redacted by the server. Newest 200 events load first.</p></div><span className="count-pill">{events.length}</span></div>
+      {eventLogHasMore && <button type="button" onClick={() => void loadOlderEvents()} disabled={loading}>Load earlier events</button>}
       {events.length ? <ol className="event-timeline">{events.map((event) => <li key={event.id}><span>{event.sequence}</span><div><b>{event.event_type.replaceAll('_', ' ')}</b><small>{event.actor} · {date(event.occurred_at)}</small></div><details><summary>Payload</summary><pre>{json(event.payload)}</pre></details></li>)}</ol> : <MissingData text="No runtime events were recorded." />}
     </article>
     {approvals.length > 0 && <ApprovalWorkspace props={props} />}

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -20,7 +20,6 @@ from sacm.core.tenancy_service import (
     TenancyService,
 )
 from sacm.core.workflow_backend import workflow_backend
-from sacm.core.workflow_queue_service import WorkflowQueueService
 from sacm.infrastructure.db.models import Artifact, ContextEvent, EvidencePack
 from sacm.infrastructure.db.session import get_db
 from sacm.schemas.contracts import (
@@ -140,7 +139,7 @@ def list_run_artifacts(
             "artifact_type": artifact.artifact_type,
             "path": artifact.path,
             "content_hash": artifact.content_hash,
-            "metadata": artifact.metadata_,
+            "metadata": EvidenceService.sanitize_for_display(artifact.metadata_ or {}),
             "created_at": artifact.created_at,
         }
         for artifact in artifacts
@@ -158,7 +157,8 @@ def capture_run_diff(
     if not run.target_repo_path:
         raise HTTPException(status_code=409, detail="Run repository path is not recorded.")
     adapter = RepositoryAdapter(run.target_repo_path)
-    diff = adapter.get_diff()
+    diff = EvidenceService.sanitize_for_display(adapter.get_diff())
+    assert isinstance(diff, str)
     summary = RepositoryAuditService.content_summary(diff)
     return {
         "diff": diff,
@@ -434,6 +434,43 @@ def recover_failed_step(
     }
 
 
+def _serialize_runtime_event(event) -> dict:
+    return {
+        "id": event.id,
+        "sequence": event.sequence,
+        "event_type": event.event_type,
+        "actor": event.actor,
+        "payload": EvidenceService.sanitize_for_display(event.payload),
+        "event_hash": event.event_hash,
+        "previous_event_hash": event.previous_event_hash,
+        "occurred_at": event.occurred_at,
+    }
+
+
+@router.get("/{run_id}/event-log")
+def get_event_log(
+    run_id: str,
+    limit: int = Query(default=200, ge=1, le=500),
+    before_sequence: int | None = Query(default=None, ge=1),
+    event_type: str | None = Query(default=None, min_length=1, max_length=128),
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Serve a bounded, redacted event timeline for the Run Detail."""
+    _authorize_run(db, run_id, actor, "runs.read")
+    events, next_before_sequence = RunService(db).event_page(
+        run_id,
+        limit=limit,
+        before_sequence=before_sequence,
+        event_type=event_type,
+    )
+    return {
+        "events": [_serialize_runtime_event(event) for event in events],
+        "next_before_sequence": next_before_sequence,
+        "redacted": True,
+    }
+
+
 @router.get("/{run_id}/events")
 def list_events(
     run_id: str,
@@ -441,20 +478,8 @@ def list_events(
     db: Session = Depends(get_db),
 ) -> list[dict]:
     service = RunService(db)
-    _authorize_run(db, run_id, actor, "runs.execute")
-    return [
-        {
-            "id": event.id,
-            "sequence": event.sequence,
-            "event_type": event.event_type,
-            "actor": event.actor,
-            "payload": event.payload,
-            "event_hash": event.event_hash,
-            "previous_event_hash": event.previous_event_hash,
-            "occurred_at": event.occurred_at,
-        }
-        for event in service.events(run_id)
-    ]
+    _authorize_run(db, run_id, actor, "runs.read")
+    return [_serialize_runtime_event(event) for event in service.events(run_id)]
 
 
 @router.post("/{run_id}/execute", status_code=202)
@@ -479,6 +504,8 @@ def cancel_run(
     try:
         _authorize_run(db, run_id, actor, "runs.execute")
         run = RunService(db).cancel(run_id)
+        from sacm.core.workflow_queue_service import WorkflowQueueService
+
         WorkflowQueueService(db).cancel(run_id)
         return RunRead.model_validate(run)
     except ValueError as exc:

@@ -1122,6 +1122,11 @@ class EvidenceService:
             return EvidenceService._redact_text(value)
         return value
 
+    @classmethod
+    def sanitize_for_display(cls, value: Any) -> Any:
+        """Redact a value before it crosses into a human-facing API response."""
+        return cls._sanitize(value)
+
     @staticmethod
     def _redact_text(value: str) -> str:
         redacted = _SECRET_ASSIGNMENT.sub(r"\1\2[REDACTED]", value)

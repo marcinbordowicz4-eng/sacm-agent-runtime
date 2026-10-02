@@ -589,6 +589,27 @@ class RunService:
             .all()
         )
 
+    def event_page(
+        self,
+        run_id: str,
+        *,
+        limit: int = 200,
+        before_sequence: int | None = None,
+        event_type: str | None = None,
+    ) -> tuple[list[RuntimeEvent], int | None]:
+        """Return the newest bounded event page in chronological display order."""
+        query = self.db.query(RuntimeEvent).filter(RuntimeEvent.run_id == run_id)
+        if before_sequence is not None:
+            query = query.filter(RuntimeEvent.sequence < before_sequence)
+        if event_type:
+            query = query.filter(RuntimeEvent.event_type == event_type)
+        newest_first = (
+            query.order_by(RuntimeEvent.sequence.desc()).limit(limit + 1).all()
+        )
+        page = newest_first[:limit]
+        next_before_sequence = page[-1].sequence if len(newest_first) > limit else None
+        return list(reversed(page)), next_before_sequence
+
     def _append_event(
         self,
         run: Run,

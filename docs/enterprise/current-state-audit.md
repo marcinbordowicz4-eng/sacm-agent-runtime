@@ -15,7 +15,7 @@ attestation._
 | Ticket-to-PR | Jira service/orchestration and draft PR service; `tests/test_jira_e2e.py` | IMPLEMENTED UNVERIFIED | Real Jira/GitHub sandbox execution has not been evidenced locally. |
 | Evidence and supply chain | `sacm/core/evidence_service.py`, `sacm/core/supply_chain_service.py` | IMPLEMENTED UNVERIFIED | Production signing keys and object-store configuration are external prerequisites. |
 | Cognitive State | immutable events, provenance relations and delivery passport in `sacm/core/cognitive_state_service.py` | IMPLEMENTED UNVERIFIED | Existing Jira E2E test asserts idempotent FEATURE snapshot and passport projection, but the full suite is not runnable in this checkout. |
-| Dashboard | React/Vite app under `apps/dashboard`; Mission, Evidence, Operations, Policies views | IMPLEMENTED AND BUILT | `npm run build` and `npm run lint` pass locally; API-connected browser E2E is missing. |
+| Dashboard | React/Vite app under `apps/dashboard`; Mission, Evidence, Operations, Policies views; bounded redacted timeline | IMPLEMENTED AND BUILT | `npm run build` and `npm run lint` pass locally; API-connected browser E2E is missing. |
 | Production topology | Kubernetes reference, Compose pilot, alerts and runbooks under `deploy/`, `config/`, `docs/` | PARTIAL | No evidence of an independent HA deployment, restore drill, or measured SLO. |
 
 ## Main flow coverage

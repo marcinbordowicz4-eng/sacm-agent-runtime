@@ -27,7 +27,7 @@ absence rather than constructing provenance from client assumptions.
 | --- | --- | --- | --- |
 | P0.2 | Staging E2E Jira → executor → Evidence Pack → draft PR | Isolated GitHub sandbox, PostgreSQL, Redis, executor credentials | Automated test with no production repository mutation. |
 | P0.3 | Approval fingerprint and plan-change invalidation | Policy/approval schema review | Positive and negative server-side tests. |
-| P1.1 | Run Detail deep links, URL filters, server pagination and log retrieval/redaction | API contracts for filters/logs | Browser E2E at desktop/mobile widths. |
+| P1.1 | Run Detail deep links, URL filters, server pagination and log retrieval/redaction | Bounded, server-redacted event-log API and timeline paging are implemented; deep links and URL filters remain | Browser E2E at desktop/mobile widths. |
 | P1.2 | Snapshot comparison and stale-context state | Cognitive-state comparison API | Explicit COMPLETE/PARTIAL/TRUNCATED/STALE cases. |
 | P1.3 | Organization configuration surfaces for agent/environment/secret-provider state | Existing tenancy and lease APIs | Permission-denied and no-secret-in-UI tests. |
 | P3 | Recovery, restore and load evidence | Staging infrastructure and observability | Measured RPO/RTO, 10 concurrent runs, and recorded deviations. |

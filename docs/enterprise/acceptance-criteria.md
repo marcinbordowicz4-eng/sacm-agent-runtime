@@ -15,10 +15,10 @@
 
 | Criterion | Evidence required |
 | --- | --- |
-| Run discovery | Server-side filters, pagination and stable URL state for organization/project/run. |
+| Run discovery | Server-side filters, pagination and stable URL state for organization/project/run. Event timeline paging is implemented; run-list filters and durable URL state remain. |
 | Incident operation | Fleet/job state, dead-letter action, rationale and durable audit record. |
 | Accessibility | Keyboard-only approval/rejection and mobile-width Run Detail browser tests. |
-| Observability | Trace-linked latency, token, cost and quality fields with explicit unavailable states. |
+| Observability | Trace-linked latency, token, cost and quality fields with explicit unavailable states. Run event payloads are server-redacted before the dashboard receives them. |
 
 ## P3 — production operations
 

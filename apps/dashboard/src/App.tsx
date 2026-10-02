@@ -11,6 +11,7 @@ import type {
   Evidence,
   EvidenceVerification,
   Executor,
+  EventLogPage,
   ExpertBenchmarkAssessment,
   Event,
   ExecutionJob,
@@ -61,6 +62,7 @@ function DashboardApp() {
   const [selected, setSelected] = useState<Run>()
   const [steps, setSteps] = useState<Step[]>([])
   const [events, setEvents] = useState<Event[]>([])
+  const [eventLogNextBefore, setEventLogNextBefore] = useState<number>()
   const [approvals, setApprovals] = useState<Approval[]>([])
   const [artifacts, setArtifacts] = useState<TaskArtifact[]>([])
   const [repositoryDiff, setRepositoryDiff] = useState<RepositoryDiff>()
@@ -132,6 +134,7 @@ function DashboardApp() {
     setSelected(undefined)
     setSteps([])
     setEvents([])
+    setEventLogNextBefore(undefined)
     setApprovals([])
     setArtifacts([])
     setRepositoryDiff(undefined)
@@ -169,7 +172,7 @@ function DashboardApp() {
         request<Run>(`/v1/runs/${run.id}`),
         optional<RunContext>(`/v1/runs/${run.id}/context`, 'Mission context'),
         optional<Step[]>(`/v1/runs/${run.id}/steps`, 'Run steps'),
-        optional<Event[]>(`/v1/runs/${run.id}/events`, 'Event timeline'),
+        optional<EventLogPage>(`/v1/runs/${run.id}/event-log?limit=200`, 'Event timeline'),
         optional<Approval[]>(`/v1/approvals?run_id=${run.id}`, 'Approvals'),
         optional<TaskArtifact[]>(`/v1/runs/${run.id}/artifacts`, 'Task artifacts'),
         optional<Evidence[]>(`/v1/runs/${run.id}/evidence`, 'Evidence packs'),
@@ -181,7 +184,7 @@ function DashboardApp() {
       if (generation !== loadGeneration.current) return
       const nextContext = contextResult.data
       const nextSteps = stepsResult.data || []
-      const nextEvents = eventsResult.data || []
+      const nextEvents = eventsResult.data?.events || []
       const nextApprovals = approvalsResult.data || []
       const nextArtifacts = artifactsResult.data || []
       const nextEvidence = evidenceResult.data || []
@@ -211,6 +214,7 @@ function DashboardApp() {
       setContext(nextContext)
       setSteps(nextSteps)
       setEvents(nextEvents)
+      setEventLogNextBefore(eventsResult.data?.next_before_sequence || undefined)
       setApprovals(nextApprovals)
       setArtifacts(nextArtifacts)
       setRepositoryDiff(undefined)
@@ -264,6 +268,27 @@ function DashboardApp() {
       }
     } finally {
       if (generation === loadGeneration.current) setLoading(false)
+    }
+  }
+
+  const loadOlderEvents = async () => {
+    if (!selected || !eventLogNextBefore) return
+    setLoading(true)
+    setError('')
+    try {
+      const page = await request<EventLogPage>(
+        `/v1/runs/${selected.id}/event-log?limit=200&before_sequence=${eventLogNextBefore}`,
+      )
+      setEvents((current) => {
+        const byId = new Map(current.map((event) => [event.id, event]))
+        page.events.forEach((event) => byId.set(event.id, event))
+        return [...byId.values()].sort((left, right) => left.sequence - right.sequence)
+      })
+      setEventLogNextBefore(page.next_before_sequence || undefined)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Unable to load earlier events.')
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -487,6 +512,7 @@ function DashboardApp() {
     selected={selected}
     steps={steps}
     events={events}
+    eventLogHasMore={Boolean(eventLogNextBefore)}
     approvals={approvals}
     artifacts={artifacts}
     repositoryDiff={repositoryDiff}
@@ -520,6 +546,7 @@ function DashboardApp() {
     loading={loading}
     loadRuns={loadRuns}
     loadRun={loadRun}
+    loadOlderEvents={loadOlderEvents}
     action={action}
     createMission={createMission}
     decideApproval={decideApproval}
