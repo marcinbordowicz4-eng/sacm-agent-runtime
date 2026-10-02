@@ -30,6 +30,7 @@ import type {
   SupplyChainCompleteness,
   SupplyChainRecord,
   TaskArtifact,
+  VerificationMatrix,
   WorkflowProgress,
 } from './types'
 
@@ -67,6 +68,7 @@ function DashboardApp() {
   const [artifacts, setArtifacts] = useState<TaskArtifact[]>([])
   const [repositoryDiff, setRepositoryDiff] = useState<RepositoryDiff>()
   const [evidence, setEvidence] = useState<Evidence[]>([])
+  const [verificationMatrix, setVerificationMatrix] = useState<VerificationMatrix>()
   const [snapshots, setSnapshots] = useState<Snapshot[]>([])
   const [clients, setClients] = useState<Client[]>([])
   const [context, setContext] = useState<RunContext>()
@@ -139,6 +141,7 @@ function DashboardApp() {
     setArtifacts([])
     setRepositoryDiff(undefined)
     setEvidence([])
+    setVerificationMatrix(undefined)
     setSnapshots([])
     setContext(undefined)
     setAnalytics(undefined)
@@ -168,7 +171,7 @@ function DashboardApp() {
     setError('')
     setUnavailableData([])
     try {
-      const [current, contextResult, stepsResult, eventsResult, approvalsResult, artifactsResult, evidenceResult, analyticsResult, snapshotsResult, comparisonResult, lifecycleMetricsResult] = await Promise.all([
+      const [current, contextResult, stepsResult, eventsResult, approvalsResult, artifactsResult, evidenceResult, verificationResult, analyticsResult, snapshotsResult, comparisonResult, lifecycleMetricsResult] = await Promise.all([
         request<Run>(`/v1/runs/${run.id}`),
         optional<RunContext>(`/v1/runs/${run.id}/context`, 'Mission context'),
         optional<Step[]>(`/v1/runs/${run.id}/steps`, 'Run steps'),
@@ -176,6 +179,7 @@ function DashboardApp() {
         optional<Approval[]>(`/v1/approvals?run_id=${run.id}`, 'Approvals'),
         optional<TaskArtifact[]>(`/v1/runs/${run.id}/artifacts`, 'Task artifacts'),
         optional<Evidence[]>(`/v1/runs/${run.id}/evidence`, 'Evidence packs'),
+        optional<VerificationMatrix>(`/v1/runs/${run.id}/verification`, 'Verification matrix'),
         optional<RunAnalytics>(`/v1/runs/${run.id}/analytics`, 'Outcome analytics'),
         optional<Snapshot[]>(`/v1/runs/${run.id}/snapshots`, 'Snapshots'),
         optional<ReplayComparison>(`/v1/runs/${run.id}/comparison`, 'Replay comparison'),
@@ -188,6 +192,7 @@ function DashboardApp() {
       const nextApprovals = approvalsResult.data || []
       const nextArtifacts = artifactsResult.data || []
       const nextEvidence = evidenceResult.data || []
+      const nextVerification = verificationResult.data
       const nextAnalytics = analyticsResult.data
       const nextSnapshots = snapshotsResult.data || []
       const nextComparison = comparisonResult.data
@@ -219,6 +224,7 @@ function DashboardApp() {
       setArtifacts(nextArtifacts)
       setRepositoryDiff(undefined)
       setEvidence(nextEvidence)
+      setVerificationMatrix(nextVerification)
       setAnalytics(nextAnalytics)
       setSnapshots(nextSnapshots)
       setComparison(nextComparison)
@@ -244,6 +250,7 @@ function DashboardApp() {
         approvalsResult.unavailable,
         artifactsResult.unavailable,
         evidenceResult.unavailable,
+        verificationResult.unavailable,
         analyticsResult.unavailable,
         snapshotsResult.unavailable,
         comparisonResult.unavailable,
@@ -517,6 +524,7 @@ function DashboardApp() {
     artifacts={artifacts}
     repositoryDiff={repositoryDiff}
     evidence={evidence}
+    verificationMatrix={verificationMatrix}
     snapshots={snapshots}
     clients={clients}
     context={context}

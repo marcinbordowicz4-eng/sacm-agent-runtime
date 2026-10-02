@@ -8,8 +8,6 @@ from sacm.core.auth_service import require_authenticated_actor
 from sacm.core.embedding_service import EmbeddingService
 from sacm.core.event_service import EventService
 from sacm.core.memory_service import MemoryService
-from sacm.core.outcome_router_service import OutcomeRouterService
-from sacm.core.router import RouterService
 from sacm.core.state_service import StateService
 from sacm.core.tenancy_service import ResourceAuthorizationService
 from sacm.infrastructure.db.session import get_db
@@ -44,6 +42,10 @@ def route_task(
     )
     vector = EmbeddingService().embed_task_context(task, history, memory)
     belief = StateService(db).get_belief_state(payload.task_id)
+    # The optional ML runtime is only needed for this route. Keeping it lazy
+    # allows health, audit and review APIs to start when routing is disabled.
+    from sacm.core.router import RouterService
+
     return RouterService().route(vector, belief)
 
 
@@ -65,6 +67,8 @@ def rank_task(
     )
     vector = EmbeddingService().embed_task_context(task, history, memory)
     belief = StateService(db).get_belief_state(payload.task_id)
+    from sacm.core.outcome_router_service import OutcomeRouterService
+
     return OutcomeRouterService(db).rank(
         task,
         vector,

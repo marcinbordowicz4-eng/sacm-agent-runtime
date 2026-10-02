@@ -179,7 +179,7 @@ function Journey({ props }: { props: DashboardProps }) {
 }
 
 export function MissionsPage(props: DashboardProps) {
-  const { runs, selected, context, analytics, steps, events, approvals, snapshots, executionJobs, comparison, action, loadRun, loadOlderEvents, eventLogHasMore, loading } = props
+  const { runs, selected, context, analytics, steps, events, approvals, snapshots, executionJobs, comparison, action, loadRun, loadOlderEvents, eventLogHasMore, loading, verificationMatrix } = props
   if (!selected) return <><PageHeader eyebrow="MISSIONS" title="Mission View" description="No authorized missions are available." /><MissingData text="Connect an authorized tenant in Settings or create a mission through the API." /></>
   const plan = context?.execution_plan
   const taskSource = context?.task.connector_type || 'Not recorded'
@@ -243,6 +243,7 @@ export function MissionsPage(props: DashboardProps) {
         <dl className="metadata"><Meta label="Tests" value={metric(analytics?.test_count)} /><Meta label="Verifications" value={metric(analytics?.verification_count)} /><Meta label="Changed files" value={metric(analytics?.changed_file_count)} /><Meta label="Evidence packs" value={metric(analytics?.evidence_pack_count)} /></dl>
         <TagList values={analytics?.details.tests} empty="No test identifiers were recorded." />
       </article>
+      <VerificationWorkspace matrix={verificationMatrix} />
       <article className="surface">
         <div className="section-head"><div><p className="eyebrow">SNAPSHOTS & REPLAY</p><h2>Reproducible journey</h2></div><span className="count-pill">{snapshots.length}</span></div>
         {snapshots.length ? <ol className="snapshot-list">{snapshots.map((snapshot) => <li key={snapshot.id}><b>{snapshot.creation_reason}</b><span>Event {snapshot.event_sequence} · {date(snapshot.created_at)}</span><small>{snapshot.checksum}</small></li>)}</ol> : <MissingData text="No snapshots were recorded for this mission." />}
@@ -260,6 +261,18 @@ export function MissionsPage(props: DashboardProps) {
     </article>
     {approvals.length > 0 && <ApprovalWorkspace props={props} />}
   </>
+}
+
+function VerificationWorkspace({ matrix }: { matrix?: DashboardProps['verificationMatrix'] }) {
+  if (!matrix) return <article className="surface"><p className="eyebrow">INDEPENDENT VERIFICATION</p><h2>Verification matrix unavailable</h2><MissingData text="No durable verification matrix was returned for this run." /></article>
+  const summary = matrix.complete ? 'COMPLETE' : matrix.technical_complete ? 'EVIDENCE INCOMPLETE' : 'BLOCKED'
+  return <article className="surface verification-workspace">
+    <div className="section-head"><div><p className="eyebrow">INDEPENDENT VERIFICATION</p><h2>Requirements and release checks</h2><p className="quiet">Recorded results only; a passing status is not inferred from an artifact.</p></div><Status value={summary} /></div>
+    <dl className="metadata"><Meta label="Build" value={matrix.build_status} /><Meta label="Regression" value={matrix.regression.status} /><Meta label="Compatibility" value={matrix.contract_compatibility.status} /><Meta label="Security" value={matrix.security_status} /><Meta label="Test integrity" value={matrix.test_integrity.status} /><Meta label="Evidence" value={matrix.evidence_complete ? 'COMPLETE' : 'INCOMPLETE'} /></dl>
+    {matrix.blocking_reasons.length > 0 && <p className="data-notice danger"><b>BLOCKERS</b> {matrix.blocking_reasons.join(' · ')}</p>}
+    {matrix.requirements.length ? <ul className="verification-requirements">{matrix.requirements.map((requirement) => <li key={requirement.requirement_id}><div><b>{requirement.requirement_text}</b><small>{requirement.requirement_id} · evidence {requirement.evidence_integrity}</small><TagList values={[...requirement.implementation_references, ...requirement.test_references]} empty="No implementation or test references recorded." /></div><Status value={requirement.status} /></li>)}</ul> : <MissingData text="The matrix does not contain requirement-level verification records." />}
+    <details><summary>Recorded commands and integrity details</summary><pre>{json({ regression_commands: matrix.regression.commands, compatibility_checks: matrix.contract_compatibility.checks, tests_removed: matrix.test_integrity.tests_removed, weakened_assertions: matrix.test_integrity.weakened_assertions })}</pre></details>
+  </article>
 }
 
 function DeliveryWorkspace({ props }: { props: DashboardProps }) {

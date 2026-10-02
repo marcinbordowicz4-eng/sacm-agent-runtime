@@ -21,6 +21,17 @@ absence rather than constructing provenance from client assumptions.
    fabricated cognitive state.
 3. UI build and lint pass; the existing `test_completed_jira_delivery_creates_idempotent_cognitive_feature_snapshot` remains the service-level regression proof.
 
+## Milestone 1 extension — reviewer-grade verification
+
+**Current change:** the dashboard now loads the existing authenticated
+`GET /v1/runs/{run_id}/verification` contract and renders requirement-level
+status, build, regression, compatibility, security, test-integrity, evidence
+completeness and explicit blockers. A 404 remains an explicit unavailable
+state; the client never synthesizes a pass from test/artifact counters.
+
+**Validation:** `npm run build` and `npm run lint` passed locally. Browser E2E
+against an API remains an explicit next step.
+
 ## Next milestones
 
 | Order | Outcome | Dependencies | Exit evidence |

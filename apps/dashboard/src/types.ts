@@ -39,6 +39,41 @@ export type EventLogPage = {
   redacted: boolean
 }
 
+export type VerificationMatrix = {
+  schema_version: string
+  task_id: string
+  run_id?: string | null
+  strict: boolean
+  build_status: string
+  requirements: {
+    requirement_id: string
+    requirement_text: string
+    status: string
+    implementation_references: string[]
+    test_references: string[]
+    verification_commands: string[]
+    evidence_integrity: string
+  }[]
+  regression: {
+    focused_test_status: string
+    failed_before_fix: boolean
+    affected_area_status: string
+    commands: string[]
+    status: string
+  }
+  contract_compatibility: { status: string; checks: string[] }
+  security_status: string
+  test_integrity: {
+    status: string
+    tests_removed: string[]
+    weakened_assertions: string[]
+  }
+  technical_complete: boolean
+  evidence_complete: boolean
+  complete: boolean
+  blocking_reasons: string[]
+}
+
 export type Approval = {
   id: string
   action: string
@@ -629,6 +664,7 @@ export type DashboardProps = {
   artifacts: TaskArtifact[]
   repositoryDiff?: RepositoryDiff
   evidence: Evidence[]
+  verificationMatrix?: VerificationMatrix
   snapshots: Snapshot[]
   clients: Client[]
   context?: RunContext
