@@ -8,7 +8,7 @@ from sacm.core.policy_service import PolicyService
 from sacm.core.recovery_service import RecoveryService
 from sacm.core.run_service import RunService
 from sacm.core.tenancy_service import ResourceAuthorizationService
-from sacm.infrastructure.db.models import Approval, RunStep
+from sacm.infrastructure.db.models import Approval, ExecutionPlan, RunStep
 from sacm.schemas.contracts import (
     AgentResultV1,
     AgentTaskV1,
@@ -181,15 +181,18 @@ class ExternalAgentService:
                     },
                 )
                 return ExternalAgentSubmission(step=failed, approval_id=approval.id)
+            if approval.status == "APPROVED" and not self._approval_is_current(
+                approval, run_id
+            ):
+                approval.status = "SUPERSEDED"
+                self.db.commit()
+                raise ValueError(
+                    "Approval is bound to a superseded execution plan; "
+                    "submit the result again for a new approval."
+                )
         self._persist_result(step, task, result, commit=commit)
         if result.status == "NEEDS_APPROVAL":
-            resource = {
-                "step_id": step.id,
-                "framework": step.input_["framework"],
-                "agent_name": step.input_["agent_name"],
-                "summary": result.summary,
-                "actions": result.actions,
-            }
+            resource = self._approval_resource(run_id, step, result)
             approval = PolicyService(self.db).request_approval(
                 run_id, "external_agent_result", resource
             )
@@ -273,6 +276,45 @@ class ExternalAgentService:
     def _approval_for(self, step: RunStep) -> Approval | None:
         approval_id = (step.output or {}).get("sacm_approval_id")
         return self.db.get(Approval, approval_id) if approval_id else None
+
+    def _approval_resource(
+        self, run_id: str, step: RunStep, result: AgentResultV1
+    ) -> dict[str, Any]:
+        return {
+            "step_id": step.id,
+            "framework": step.input_["framework"],
+            "agent_name": step.input_["agent_name"],
+            "summary": result.summary,
+            "actions": result.actions,
+            **self._plan_binding(run_id),
+        }
+
+    def _approval_is_current(self, approval: Approval, run_id: str) -> bool:
+        binding = self._plan_binding(run_id)
+        resource = approval.resource or {}
+        return all(resource.get(key) == value for key, value in binding.items())
+
+    def _plan_binding(self, run_id: str) -> dict[str, str | int | None]:
+        run = self.runs.get(run_id)
+        if run is None:
+            raise ValueError(f"Run {run_id} not found.")
+        plan = (
+            self.db.query(ExecutionPlan)
+            .filter(ExecutionPlan.task_id == run.task_id)
+            .order_by(ExecutionPlan.revision.desc())
+            .first()
+        )
+        if plan is None:
+            return {
+                "execution_plan_id": None,
+                "plan_revision": None,
+                "plan_source_hash": None,
+            }
+        return {
+            "execution_plan_id": plan.id,
+            "plan_revision": plan.revision,
+            "plan_source_hash": plan.source_hash,
+        }
 
     @staticmethod
     def _failure_dict(result: AgentResultV1) -> dict[str, Any] | None:

@@ -9,6 +9,10 @@
 | Sandbox/egress proof absent | Untrusted repository content could exceed intended execution boundary | Test the configured executor image and network policy | Path traversal, SSRF/egress and resource-limit tests. |
 | Evidence signing key lifecycle unverified | Manifest signature cannot be trusted operationally | Integrate protected non-production signing key and rotation procedure | Valid, invalid and rotated-key verification test. |
 
+Approval digest and external-agent plan rebinding are now implemented and tested;
+the remaining P0 work is proving those controls against a real isolated
+executor and SCM integration.
+
 ## P1 — delivery process
 
 | Gap | Impact | Repository next step | Exit evidence |

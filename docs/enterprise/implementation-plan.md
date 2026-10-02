@@ -32,6 +32,14 @@ state; the client never synthesizes a pass from test/artifact counters.
 **Validation:** `npm run build` and `npm run lint` passed locally. Browser E2E
 against an API remains an explicit next step.
 
+## P0 extension — approval invalidation at execution time
+
+External-agent result approvals now carry `execution_plan_id`,
+`plan_revision` and `plan_source_hash`. Before a previously approved result can
+complete a waiting step, SACM compares that binding with the latest durable
+plan. A mismatch marks the approval `SUPERSEDED`; a re-submission creates a new
+approval and records a `StepApprovalRebound` event without deleting history.
+
 ## Next milestones
 
 | Order | Outcome | Dependencies | Exit evidence |

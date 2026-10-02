@@ -302,6 +302,19 @@ class RunService:
         run = self._require(run_id)
         step = self._require_step(run_id, step_id)
         if step.status == "AWAITING_APPROVAL":
+            # A plan revision can supersede a pending decision. Preserve the
+            # step/history while binding it to the new durable approval.
+            step.output = output
+            self._append_event(
+                run,
+                event_type="StepApprovalRebound",
+                actor="system",
+                payload={"name": step.name, "approval_id": output["sacm_approval_id"]},
+                step_id=step.id,
+            )
+            self._checkpoint(run, f"step_approval_rebound:{step.id}")
+            self.db.commit()
+            self.db.refresh(step)
             return step
         if step.status not in {"PENDING", "RUNNING"}:
             raise ValueError(f"Step {step_id} cannot await approval from {step.status}")

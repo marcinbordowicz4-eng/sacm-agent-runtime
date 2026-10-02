@@ -10,7 +10,7 @@ not a production attestation._
 | Queue leases, worker recovery and dead-letter handling | IMPLEMENTED | `workflow_queue_service.py`, `execution_plane_service.py`, recovery routes. External-worker failure drill is UNVERIFIED. |
 | Snapshot, restore, replay and comparison | IMPLEMENTED | `snapshot_service.py`, `tests/test_snapshot_replay_service.py`. Real storage/restore drill is UNVERIFIED. |
 | Tenant authorization and RBAC | IMPLEMENTED | `tenancy_service.py`, production security tests and resource authorization in API routes. OIDC integration is UNVERIFIED without an IdP. |
-| Plan-bound human approval | IMPLEMENTED | SHA-256 resource binding/expiry in `policy_service.py`; `tests/test_policy_service.py`. |
+| Plan-bound human approval | IMPLEMENTED | SHA-256 resource binding/expiry in `policy_service.py`; external-agent approvals include execution-plan id/revision/source hash and become `SUPERSEDED` after a change; `tests/test_policy_service.py` and `tests/test_external_agent_approval_binding.py`. |
 | Evidence Pack, provenance and integrity checks | IMPLEMENTED | `evidence_service.py`, `traceability_service.py`, verifier tests. Signing-key deployment is UNVERIFIED. |
 | Secret redaction in reviewer data | IMPLEMENTED | Redacted event log, diff and artifact metadata in `apps/api/routes/runs.py`; `tests/test_run_detail_event_log.py`. |
 | Run Detail reviewer workflow | IMPLEMENTED | Dashboard Run Detail renders plan, approvals, redacted event timeline, diff, Evidence Pack, delivery passport and verification matrix. API-connected browser E2E is UNVERIFIED. |
