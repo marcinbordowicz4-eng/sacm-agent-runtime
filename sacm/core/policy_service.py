@@ -1,7 +1,9 @@
+import json
 import os
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 from typing import Any
 
 import httpx
@@ -23,6 +25,23 @@ from sacm.infrastructure.db.models import (
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _resource_digest(resource: dict[str, Any]) -> str:
+    """Return a stable binding for the exact resource a person approved."""
+    canonical = json.dumps(
+        resource, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str
+    )
+    return sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _approval_expiry() -> datetime | None:
+    """Optionally bound approvals in time without silently changing existing policy."""
+    try:
+        ttl_seconds = int(os.getenv("SACM_APPROVAL_TTL_SECONDS", "0"))
+    except ValueError:
+        return None
+    return _utcnow() + timedelta(seconds=ttl_seconds) if ttl_seconds > 0 else None
 
 
 @dataclass(frozen=True)
@@ -133,6 +152,10 @@ class PolicyService:
         approval = ResourceAuthorizationService(self.db).require_approval(
             approval_id, actor, "approvals.decide"
         )
+        if approval.expires_at is not None and approval.expires_at <= _utcnow():
+            approval.status = "EXPIRED"
+            self.db.commit()
+            raise ValueError(f"Approval {approval_id} has expired.")
         if approval.status != "PENDING":
             raise ValueError(f"Approval {approval_id} has already been decided.")
         approval.status = "APPROVED" if approve else "REJECTED"
@@ -209,6 +232,7 @@ class PolicyService:
         run = self.db.get(Run, run_id)
         if not run:
             raise ValueError(f"Run {run_id} not found.")
+        digest = _resource_digest(resource)
         approvals = (
             self.db.query(Approval)
             .filter(
@@ -218,12 +242,21 @@ class PolicyService:
             .order_by(Approval.requested_at.desc())
             .all()
         )
-        approval = next(
-            (candidate for candidate in approvals if candidate.resource == resource),
-            None,
-        )
-        if approval:
-            return approval
+        for candidate in approvals:
+            # Pre-digest records are supported only if their legacy resource still
+            # hashes to the requested resource. A changed plan can never inherit an
+            # old approval just because it has the same action name.
+            candidate_digest = candidate.resource_digest or _resource_digest(
+                candidate.resource
+            )
+            if candidate_digest != digest:
+                continue
+            if candidate.expires_at is not None and candidate.expires_at <= _utcnow():
+                if candidate.status in {"PENDING", "APPROVED"}:
+                    candidate.status = "EXPIRED"
+                    self.db.commit()
+                continue
+            return candidate
         approval = Approval(
             id=str(uuid.uuid4()),
             run_id=run_id,
@@ -239,8 +272,10 @@ class PolicyService:
             ),
             action=action,
             resource=resource,
+            resource_digest=digest,
             status="PENDING",
             requested_at=_utcnow(),
+            expires_at=_approval_expiry(),
         )
         self.db.add(approval)
         self.db.commit()

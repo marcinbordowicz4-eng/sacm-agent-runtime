@@ -1728,8 +1728,12 @@ class Approval(Base):
     run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), nullable=False, index=True)
     action: Mapped[str] = mapped_column(String, nullable=False)
     resource: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    resource_digest: Mapped[str | None] = mapped_column(
+        String, nullable=True, index=True
+    )
     status: Mapped[str] = mapped_column(String, nullable=False, default="PENDING")
     requested_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     decided_by: Mapped[str | None] = mapped_column(String, nullable=True)
     decision_reason: Mapped[str | None] = mapped_column(Text, nullable=True)

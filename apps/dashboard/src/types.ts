@@ -38,6 +38,8 @@ export type Approval = {
   action: string
   status: string
   requested_at: string
+  resource_digest?: string | null
+  expires_at?: string | null
   decided_at?: string | null
   resource: Record<string, unknown>
   decided_by?: string | null
@@ -510,6 +512,33 @@ export type EvidenceVerification = {
   [key: string]: unknown
 }
 
+export type CognitiveDeliveryPassport = {
+  schema_version: string
+  project_id: string
+  delivery_id: string
+  task_id: string
+  run_id: string
+  source_revision?: string | null
+  requirements: string[]
+  evidence: { id?: string; manifest_hash?: string; verification_status?: string }[]
+  pull_request: { status?: string; url?: string | null }
+  traceability: Record<string, unknown>
+  snapshot?: {
+    id: string
+    snapshot_type: string
+    state_hash: string
+    commit_hash?: string | null
+    created_at: string
+  } | null
+  provenance: {
+    source_type: string
+    source_id: string
+    target_type: string
+    target_id: string
+    relation: string
+  }[]
+}
+
 export type WorkflowProgressEntry = {
   event_id: string
   phase: string
@@ -612,6 +641,7 @@ export type DashboardProps = {
   supplyChainCompleteness?: SupplyChainCompleteness
   evidenceManifest?: Record<string, unknown>
   evidenceVerification?: EvidenceVerification
+  cognitiveDeliveryPassport?: CognitiveDeliveryPassport
   lifecycleMetrics?: LifecycleMetrics
   expertBenchmarkAssessment?: ExpertBenchmarkAssessment
   progress?: WorkflowProgress

@@ -7,6 +7,7 @@ import type {
   ApplicationContextFull,
   Approval,
   Client,
+  CognitiveDeliveryPassport,
   Evidence,
   EvidenceVerification,
   Executor,
@@ -45,6 +46,13 @@ type OptionalData<T> = {
   unavailable?: string
 }
 
+function cognitiveDeliveryId(context?: RunContext): string | undefined {
+  const candidate = context?.jira_delivery?.context?.cognitive_delivery
+  if (!candidate || typeof candidate !== 'object') return undefined
+  const value = (candidate as Record<string, unknown>).delivery_id
+  return typeof value === 'string' && value ? value : undefined
+}
+
 function DashboardApp() {
   const [baseUrl, setBaseUrl] = useState(import.meta.env.VITE_SACM_API_URL || '/api')
   const [actor, setActor] = useState(localStorage.getItem('sacm-actor') || 'local-admin')
@@ -76,6 +84,7 @@ function DashboardApp() {
   const [supplyChainCompleteness, setSupplyChainCompleteness] = useState<SupplyChainCompleteness>()
   const [evidenceManifest, setEvidenceManifest] = useState<Record<string, unknown>>()
   const [evidenceVerification, setEvidenceVerification] = useState<EvidenceVerification>()
+  const [cognitiveDeliveryPassport, setCognitiveDeliveryPassport] = useState<CognitiveDeliveryPassport>()
   const [lifecycleMetrics, setLifecycleMetrics] = useState<LifecycleMetrics>()
   const [expertBenchmarkAssessment, setExpertBenchmarkAssessment] = useState<ExpertBenchmarkAssessment>()
   const [progress, setProgress] = useState<WorkflowProgress>()
@@ -144,6 +153,7 @@ function DashboardApp() {
     setSupplyChainCompleteness(undefined)
     setEvidenceManifest(undefined)
     setEvidenceVerification(undefined)
+    setCognitiveDeliveryPassport(undefined)
     setLifecycleMetrics(undefined)
     setProgress(undefined)
     setProgressError('')
@@ -181,10 +191,12 @@ function DashboardApp() {
       const nextLifecycleMetrics = lifecycleMetricsResult.data
       const latestEvidence = [...nextEvidence].sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))[0]
       const organizationId = nextContext?.organization?.id
-      const [projectAggregateResult, organizationAggregateResult, governancePoliciesResult, applicationResult, healthResult, fleetResult, executorsResult, jobsResult, supplyChainResult, completenessResult, manifestResult] = await Promise.all([
+      const deliveryId = cognitiveDeliveryId(nextContext)
+      const [projectAggregateResult, organizationAggregateResult, governancePoliciesResult, cognitivePassportResult, applicationResult, healthResult, fleetResult, executorsResult, jobsResult, supplyChainResult, completenessResult, manifestResult] = await Promise.all([
         nextContext?.project ? optional<AggregateAnalytics>(`/v1/analytics/projects/${nextContext.project.id}`, 'Project analytics') : Promise.resolve<OptionalData<AggregateAnalytics>>({}),
         organizationId ? optional<AggregateAnalytics>(`/v1/analytics/organizations/${organizationId}`, 'Organization analytics') : Promise.resolve<OptionalData<AggregateAnalytics>>({}),
         organizationId ? optional<GovernancePolicy[]>(`/v1/organizations/${organizationId}/governance/policies${nextContext?.project ? `?project_id=${nextContext.project.id}` : ''}`, 'Governance policies') : Promise.resolve<OptionalData<GovernancePolicy[]>>({}),
+        nextContext?.project && deliveryId ? optional<CognitiveDeliveryPassport>(`/v1/projects/${nextContext.project.id}/cognitive/deliveries/${deliveryId}/passport`, 'Cognitive delivery passport') : Promise.resolve<OptionalData<CognitiveDeliveryPassport>>({}),
         optional<ApplicationContextFull>(`/v1/tasks/${run.task_id}/application-context`, 'Application context'),
         optional<OperationalHealth>(`/v1/operations/health${organizationId ? `?organization_id=${organizationId}` : ''}`, 'Operational health'),
         organizationId ? optional<ExecutorFleetHealth>(`/v1/executors/health?organization_id=${organizationId}`, 'Executor fleet health') : Promise.resolve<OptionalData<ExecutorFleetHealth>>({}),
@@ -209,6 +221,7 @@ function DashboardApp() {
       setProjectAnalytics(projectAggregateResult.data)
       setOrganizationAnalytics(organizationAggregateResult.data)
       setGovernancePolicies(governancePoliciesResult.data || [])
+      setCognitiveDeliveryPassport(cognitivePassportResult.data)
       setFullApplication(applicationResult.data)
       setOperationalHealth(healthResult.data)
       setExecutorFleet(fleetResult.data)
@@ -234,6 +247,7 @@ function DashboardApp() {
         projectAggregateResult.unavailable,
         organizationAggregateResult.unavailable,
         governancePoliciesResult.unavailable,
+        cognitivePassportResult.unavailable,
         applicationResult.unavailable,
         healthResult.unavailable,
         fleetResult.unavailable,
@@ -496,6 +510,7 @@ function DashboardApp() {
     supplyChainCompleteness={supplyChainCompleteness}
     evidenceManifest={evidenceManifest}
     evidenceVerification={evidenceVerification}
+    cognitiveDeliveryPassport={cognitiveDeliveryPassport}
     lifecycleMetrics={lifecycleMetrics}
     expertBenchmarkAssessment={expertBenchmarkAssessment}
     progress={progress}
