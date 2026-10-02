@@ -1,4 +1,4 @@
-import type { FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { date, json, metric, money, record, text } from '../formatters'
 import type {
   DashboardProps,
@@ -212,6 +212,7 @@ export function MissionsPage(props: DashboardProps) {
       <div><span>Cost</span><strong>{money(estimatedCost)}</strong><small>{metric(inputTokens)} input · {metric(outputTokens)} output tokens</small></div>
     </section>
     <Journey props={props} />
+    <DeliveryWorkspace props={props} />
     <section className="two-column">
       <Readiness props={props} />
       <AutonomyDecision props={props} />
@@ -256,8 +257,49 @@ export function MissionsPage(props: DashboardProps) {
       <div className="section-head"><div><p className="eyebrow">LIVE CHANGE JOURNEY</p><h2>Event timeline</h2></div><span className="count-pill">{events.length}</span></div>
       {events.length ? <ol className="event-timeline">{events.map((event) => <li key={event.id}><span>{event.sequence}</span><div><b>{event.event_type.replaceAll('_', ' ')}</b><small>{event.actor} · {date(event.occurred_at)}</small></div><details><summary>Payload</summary><pre>{json(event.payload)}</pre></details></li>)}</ol> : <MissingData text="No runtime events were recorded." />}
     </article>
-    {approvals.length > 0 && <article className="surface"><div className="section-head"><div><p className="eyebrow">APPROVALS</p><h2>Human decisions</h2></div></div>{approvals.map((approval) => <div className="approval-row" key={approval.id}><div><b>{approval.action}</b><small>{date(approval.requested_at)}</small></div><Status value={approval.status} /></div>)}</article>}
+    {approvals.length > 0 && <ApprovalWorkspace props={props} />}
   </>
+}
+
+function DeliveryWorkspace({ props }: { props: DashboardProps }) {
+  const { selected, context, artifacts, repositoryDiff, captureDiff, buildEvidence, loading } = props
+  const hasRepository = Boolean(selected?.target_repo_path)
+  const prUrl = context?.jira_delivery?.pr_url
+  return <article className="surface delivery-workspace">
+    <div className="section-head"><div><p className="eyebrow">DEVELOPER HANDOFF</p><h2>Changes, artifacts and pull request</h2><p className="quiet">Review the recorded delivery before a human accepts or merges it.</p></div><div className="workspace-actions"><button type="button" onClick={() => void captureDiff()} disabled={!hasRepository || loading}>Capture current diff</button><button type="button" className="primary" onClick={() => void buildEvidence()} disabled={loading}>Build evidence</button></div></div>
+    {!hasRepository && <p className="data-notice"><b>REPOSITORY NOT RECORDED</b> Add a repository path when creating the mission to enable scoped diff capture.</p>}
+    <div className="delivery-grid">
+      <section><h3>Pull request handoff</h3>{prUrl ? <a className="pr-link" href={prUrl} target="_blank" rel="noreferrer">Open draft pull request ↗</a> : <p className="missing">No pull request has been recorded yet. SACM never merges a pull request automatically.</p>}<dl className="metadata"><Meta label="Delivery status" value={context?.jira_delivery?.status || 'Not recorded'} /><Meta label="PR status" value={context?.jira_delivery?.pr_status || 'Not recorded'} /></dl></section>
+      <section><h3>Recorded artifacts</h3>{artifacts.length ? <ul className="artifact-list">{artifacts.slice(0, 8).map((artifact) => <li key={artifact.id}><span>{artifact.artifact_type}</span><b>{artifact.path}</b><small>{artifact.content_hash.slice(0, 16)}… · {date(artifact.created_at)}</small></li>)}</ul> : <p className="missing">No artifacts have been persisted yet.</p>}</section>
+    </div>
+    {repositoryDiff && <section className="diff-panel"><div><h3>Captured diff</h3><small>{repositoryDiff.changed_files.length} changed files · SHA-256 {repositoryDiff.sha256}</small></div><pre>{repositoryDiff.diff || 'No uncommitted repository changes were found.'}</pre></section>}
+  </article>
+}
+
+function ApprovalWorkspace({ props }: { props: DashboardProps }) {
+  return <article className="surface approval-workspace"><div className="section-head"><div><p className="eyebrow">APPROVALS</p><h2>Human decisions</h2><p className="quiet">A decision is recorded with its rationale and sent to the policy service.</p></div></div>{props.approvals.map((approval) => <ApprovalRow approval={approval} props={props} key={approval.id} />)}</article>
+}
+
+function ApprovalRow({ approval, props }: { approval: DashboardProps['approvals'][number]; props: DashboardProps }) {
+  const [reason, setReason] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+  const decide = async (approve: boolean) => {
+    if (!reason.trim()) {
+      setError('A decision rationale is required.')
+      return
+    }
+    setSubmitting(true)
+    setError('')
+    try {
+      await props.decideApproval(approval, approve, reason.trim())
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Decision was not recorded.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+  return <div className="approval-decision"><div className="approval-row"><div><b>{approval.action}</b><small>Requested {date(approval.requested_at)}{approval.decided_by ? ` · decided by ${approval.decided_by}` : ''}</small>{approval.decision_reason && <p>{approval.decision_reason}</p>}</div><Status value={approval.status} /></div>{approval.status === 'PENDING' && <div className="approval-controls"><label>Decision rationale<input value={reason} onChange={(event) => setReason(event.target.value)} maxLength={4000} placeholder="Why is this safe to approve or reject?" /></label><div><button type="button" onClick={() => void decide(false)} disabled={submitting}>Reject</button><button type="button" className="primary" onClick={() => void decide(true)} disabled={submitting}>{submitting ? 'Recording…' : 'Approve'}</button></div>{error && <p className="danger-text" role="alert">{error}</p>}</div>}</div>
 }
 
 function AgentRow({ agent }: { agent: OutcomeAgent }) {
@@ -384,7 +426,25 @@ export function PoliciesPage(props: DashboardProps) {
       </article>
     </section>
     <article className="surface"><div className="section-head"><div><p className="eyebrow">GATES</p><h2>Approval and security controls</h2></div></div>{plan?.approval_gates.length ? plan.approval_gates.map((gate) => <div className="gate-row" key={gate.id}><div><b>{gate.action}</b><p>{gate.reason}</p><small>{gate.gate_type} · {gate.step_ids.length} affected steps</small></div><Status value={gate.status} /></div>) : <MissingData text="No approval gates were recorded." />}</article>
+    <article className="surface policy-inventory"><div className="section-head"><div><p className="eyebrow">GOVERNANCE POLICY INVENTORY</p><h2>Versioned policy lifecycle</h2><p className="quiet">Only an authorized operator can activate or retire a policy; every change is enforced by the governance API.</p></div><span className="count-pill">{props.governancePolicies.length}</span></div>{props.governancePolicies.length ? props.governancePolicies.map((policy) => <GovernancePolicyRow policy={policy} props={props} key={policy.id} />) : <MissingData text="No authorized governance policies were returned for the selected project." />}</article>
   </>
+}
+
+function GovernancePolicyRow({ policy, props }: { policy: DashboardProps['governancePolicies'][number]; props: DashboardProps }) {
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+  const action = async (operation: 'activate' | 'retire') => {
+    setSubmitting(true)
+    setError('')
+    try {
+      await (operation === 'activate' ? props.activatePolicy(policy) : props.retirePolicy(policy))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Policy lifecycle change failed.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+  return <div className="governance-policy-row"><div><b>{policy.name} <small>v{policy.version}</small></b><p>{policy.description || 'No description recorded.'}</p><small>{policy.scope_key} · {policy.rules.length} governed resource categories · created {date(policy.created_at)}</small></div><div><Status value={policy.status} />{policy.status !== 'ACTIVE' && policy.status !== 'RETIRED' && <button type="button" onClick={() => void action('activate')} disabled={submitting}>{submitting ? 'Updating…' : 'Activate'}</button>}{policy.status === 'ACTIVE' && <button type="button" onClick={() => void action('retire')} disabled={submitting}>{submitting ? 'Updating…' : 'Retire'}</button>}{error && <p className="danger-text" role="alert">{error}</p>}</div></div>
 }
 
 function manifestSection(manifest: Record<string, unknown> | undefined, key: string) {
@@ -472,6 +532,48 @@ export function SecurityPage(props: DashboardProps) {
       <article className="surface"><div className="section-head"><div><p className="eyebrow">SECURITY AUTONOMY</p><h2>{actionHeldForReview ? 'Action held for review' : 'No recorded policy block'}</h2></div><Status value={actionHeldForReview ? 'REVIEW REQUIRED' : 'SUGGESTED'} /></div><p>{actionHeldForReview ? 'Recorded policy blocks or high/critical findings require remediation or approval before relying on an autonomous action.' : 'This is not a security guarantee; it means no blocking signal was returned by the selected mission APIs.'}</p><details><summary>Security evidence</summary><pre>{json({ review: props.context?.execution_plan?.security_review, supply_chain: props.supplyChainCompleteness, signing: props.operationalHealth?.signing })}</pre></details></article>
     </section>
   </>
+}
+
+export function OperationsPage(props: DashboardProps) {
+  const { executors, executorFleet, organizationJobs, operationalHealth, loadRuns } = props
+  const deadLetters = organizationJobs.filter((job) => job.state === 'DEAD_LETTER')
+  return <>
+    <PageHeader eyebrow="ENTERPRISE OPERATIONS" title="Execution Operations" description="Capacity, isolation boundaries and recovery controls for the authorized executor fleet." actions={<button type="button" className="primary" onClick={() => void loadRuns()}>Refresh operations</button>} />
+    <section className="operations-summary">
+      <div><span>Registered executors</span><strong>{metric(executorFleet?.total)}</strong><small>{metric(executorFleet?.active)} active · {metric(executorFleet?.offline)} offline</small></div>
+      <div><span>Available capacity</span><strong>{metric(executorFleet?.capacity.available_slots)}</strong><small>{executorFleet ? `${executorFleet.capacity.active_jobs}/${executorFleet.capacity.max_concurrent_jobs} slots occupied` : 'Not recorded'}</small></div>
+      <div><span>Queued / running</span><strong>{organizationJobs.filter((job) => job.state === 'QUEUED').length} / {organizationJobs.filter((job) => job.state === 'RUNNING').length}</strong><small>Authorized organization jobs</small></div>
+      <div><span>Dead letter jobs</span><strong>{deadLetters.length}</strong><small>Explicit operator review required</small></div>
+      <div><span>Operational health</span><Status value={operationalHealth?.status || 'NOT RECORDED'} /><small>Backup, audit and signing checks</small></div>
+    </section>
+    <section className="two-column">
+      <article className="surface"><div className="section-head"><div><p className="eyebrow">ISOLATED EXECUTORS</p><h2>Registered workforce</h2></div><span className="count-pill">{executors.length}</span></div>{executors.length ? <div className="executor-list">{executors.map((executor) => <div className="executor-row" key={executor.id}><div><b>{executor.display_name}</b><small>{executor.runtime_kind} · {executor.sandbox_runtime} · {executor.version}</small><small>{executor.storage_region || 'Region not recorded'} · {executor.storage_classification || 'Classification not recorded'}</small><TagList values={executor.capabilities} empty="No capabilities recorded." /></div><Status value={executor.status} /></div>)}</div> : <MissingData text="No authorized executor registrations are available for the current organization." />}</article>
+      <article className="surface"><div className="section-head"><div><p className="eyebrow">RECOVERY QUEUE</p><h2>Dead-letter handling</h2></div><span className="count-pill">{deadLetters.length}</span></div>{deadLetters.length ? deadLetters.map((job) => <DeadLetterJob job={job} props={props} key={job.id} />) : <MissingData text="No dead-letter jobs require operator action." />}</article>
+    </section>
+    <article className="surface table-surface operations-jobs"><div className="section-head"><div><p className="eyebrow">ORGANIZATION JOBS</p><h2>Execution queue</h2></div><span className="count-pill">{organizationJobs.length}</span></div>{organizationJobs.length ? <div className="table-wrap"><table><thead><tr><th>Job</th><th>Run / step</th><th>Executor</th><th>Attempt</th><th>State</th></tr></thead><tbody>{organizationJobs.map((job) => <tr key={job.id}><td><b>{job.id.slice(0, 12)}</b><small>{date(job.queued_at)}</small></td><td>{job.run_id.slice(0, 10)}<small>{job.run_step_id.slice(0, 10)}</small></td><td>{job.executor_id?.slice(0, 12) || 'Unassigned'}</td><td>{job.attempt ?? 'Not recorded'}</td><td><Status value={job.state} /></td></tr>)}</tbody></table></div> : <MissingData text="No authorized organization jobs are available." />}</article>
+  </>
+}
+
+function DeadLetterJob({ job, props }: { job: DashboardProps['organizationJobs'][number]; props: DashboardProps }) {
+  const [reason, setReason] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+  const requeue = async () => {
+    if (!reason.trim()) {
+      setError('A recovery rationale is required.')
+      return
+    }
+    setSubmitting(true)
+    setError('')
+    try {
+      await props.requeueJob(job, reason.trim())
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Job could not be requeued.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+  return <div className="dead-letter-row"><div><b>{job.id.slice(0, 12)}</b><small>Run {job.run_id.slice(0, 10)} · attempt {job.attempt ?? 'Not recorded'}</small></div><label>Recovery rationale<input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Why is requeue safe?" /></label><button type="button" onClick={() => void requeue()} disabled={submitting}>{submitting ? 'Requeueing…' : 'Requeue'}</button>{error && <p className="danger-text" role="alert">{error}</p>}</div>
 }
 
 export function SettingsPage(props: DashboardProps) {

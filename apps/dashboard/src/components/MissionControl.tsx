@@ -6,12 +6,14 @@ import {
   BenchmarksPage,
   CommandCenterPage,
   MissionsPage,
+  OperationsPage,
   PassportsPage,
   PoliciesPage,
   SecurityPage,
   SettingsPage,
 } from './MissionPages'
 import { NavigationRail } from './MissionNavigation'
+import { MissionComposer } from './MissionComposer'
 import { navigationItems, type DashboardView } from './viewTypes'
 
 type CommandItem = {
@@ -26,6 +28,7 @@ export function MissionControl(props: DashboardProps) {
   const [activeView, setActiveView] = useState<DashboardView>('command')
   const [commandOpen, setCommandOpen] = useState(false)
   const [query, setQuery] = useState('')
+  const [composerOpen, setComposerOpen] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
   const attentionCount = props.portfolioAnalytics.reduce(
     (sum, item) => sum + Number(item.policy_blocked === true) + (item.high_critical_security_finding_count || 0) + item.pending_approval_count,
@@ -52,6 +55,16 @@ export function MissionControl(props: DashboardProps) {
       keywords: `${item.label} navigate page`,
       action: () => navigate(item.id),
     })),
+    {
+      id: 'new-mission',
+      label: 'Create a new mission',
+      description: 'Set outcome, scope, repository and execution intent',
+      keywords: 'create new mission task execute agent',
+      action: () => {
+        setComposerOpen(true)
+        setCommandOpen(false)
+      },
+    },
     {
       id: 'view-settings',
       label: 'Open Settings',
@@ -109,6 +122,7 @@ export function MissionControl(props: DashboardProps) {
     passports: <PassportsPage {...props} />,
     benchmarks: <BenchmarksPage {...props} />,
     security: <SecurityPage {...props} />,
+    operations: <OperationsPage {...props} />,
     settings: <SettingsPage {...props} />,
   }[activeView]
 
@@ -120,7 +134,7 @@ export function MissionControl(props: DashboardProps) {
         <button type="button" className="global-search" onClick={() => setCommandOpen(true)} aria-haspopup="dialog">
           <span aria-hidden="true">⌕</span><b>Search missions, applications and views</b><kbd>⌘ K</kbd>
         </button>
-        <div className="topbar-state"><span className={props.error ? 'connection-dot error-dot' : 'connection-dot'} /><span>{props.error ? 'Connection issue' : props.loading ? 'Refreshing' : 'API connected'}</span></div>
+        <div className="topbar-actions"><button type="button" className="new-mission-button" onClick={() => setComposerOpen(true)}>＋ New mission</button><div className="topbar-state"><span className={props.error ? 'connection-dot error-dot' : 'connection-dot'} /><span>{props.error ? 'Connection issue' : props.loading ? 'Refreshing' : 'API connected'}</span></div></div>
       </div>
       {props.error && <p className="error" role="alert">{props.error}</p>}
       {props.unavailableData.length > 0 && <p className="data-notice" role="status"><b>PARTIAL DATA</b> {props.unavailableData.join(' · ')}</p>}
@@ -136,5 +150,6 @@ export function MissionControl(props: DashboardProps) {
         <div className="command-results">{results.length ? results.map((item) => <button type="button" key={item.id} onClick={item.action}><span><b>{item.label}</b><small>{item.description}</small></span><i aria-hidden="true">↵</i></button>) : <p className="missing">No matching view, mission or safe action.</p>}</div>
       </section>
     </div>}
+    {composerOpen && <MissionComposer clients={props.clients} loading={props.loading} onClose={() => setComposerOpen(false)} onCreate={props.createMission} />}
   </main>
 }

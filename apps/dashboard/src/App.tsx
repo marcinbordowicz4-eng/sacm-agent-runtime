@@ -9,20 +9,25 @@ import type {
   Client,
   Evidence,
   EvidenceVerification,
+  Executor,
   ExpertBenchmarkAssessment,
   Event,
   ExecutionJob,
   ExecutorFleetHealth,
+  GovernancePolicy,
   LifecycleMetrics,
   OperationalHealth,
   ReplayComparison,
   Run,
   RunAnalytics,
   RunContext,
+  MissionCreateInput,
+  RepositoryDiff,
   Snapshot,
   Step,
   SupplyChainCompleteness,
   SupplyChainRecord,
+  TaskArtifact,
   WorkflowProgress,
 } from './types'
 
@@ -49,6 +54,8 @@ function DashboardApp() {
   const [steps, setSteps] = useState<Step[]>([])
   const [events, setEvents] = useState<Event[]>([])
   const [approvals, setApprovals] = useState<Approval[]>([])
+  const [artifacts, setArtifacts] = useState<TaskArtifact[]>([])
+  const [repositoryDiff, setRepositoryDiff] = useState<RepositoryDiff>()
   const [evidence, setEvidence] = useState<Evidence[]>([])
   const [snapshots, setSnapshots] = useState<Snapshot[]>([])
   const [clients, setClients] = useState<Client[]>([])
@@ -56,12 +63,15 @@ function DashboardApp() {
   const [analytics, setAnalytics] = useState<RunAnalytics>()
   const [projectAnalytics, setProjectAnalytics] = useState<AggregateAnalytics>()
   const [organizationAnalytics, setOrganizationAnalytics] = useState<AggregateAnalytics>()
+  const [governancePolicies, setGovernancePolicies] = useState<GovernancePolicy[]>([])
   const [comparison, setComparison] = useState<ReplayComparison>()
   const [portfolioAnalytics, setPortfolioAnalytics] = useState<RunAnalytics[]>([])
   const [fullApplication, setFullApplication] = useState<ApplicationContextFull>()
   const [operationalHealth, setOperationalHealth] = useState<OperationalHealth>()
   const [executorFleet, setExecutorFleet] = useState<ExecutorFleetHealth>()
+  const [executors, setExecutors] = useState<Executor[]>([])
   const [executionJobs, setExecutionJobs] = useState<ExecutionJob[]>([])
+  const [organizationJobs, setOrganizationJobs] = useState<ExecutionJob[]>([])
   const [supplyChainRecords, setSupplyChainRecords] = useState<SupplyChainRecord[]>([])
   const [supplyChainCompleteness, setSupplyChainCompleteness] = useState<SupplyChainCompleteness>()
   const [evidenceManifest, setEvidenceManifest] = useState<Record<string, unknown>>()
@@ -114,17 +124,22 @@ function DashboardApp() {
     setSteps([])
     setEvents([])
     setApprovals([])
+    setArtifacts([])
+    setRepositoryDiff(undefined)
     setEvidence([])
     setSnapshots([])
     setContext(undefined)
     setAnalytics(undefined)
     setProjectAnalytics(undefined)
     setOrganizationAnalytics(undefined)
+    setGovernancePolicies([])
     setComparison(undefined)
     setFullApplication(undefined)
     setOperationalHealth(undefined)
     setExecutorFleet(undefined)
+    setExecutors([])
     setExecutionJobs([])
+    setOrganizationJobs([])
     setSupplyChainRecords([])
     setSupplyChainCompleteness(undefined)
     setEvidenceManifest(undefined)
@@ -140,12 +155,13 @@ function DashboardApp() {
     setError('')
     setUnavailableData([])
     try {
-      const [current, contextResult, stepsResult, eventsResult, approvalsResult, evidenceResult, analyticsResult, snapshotsResult, comparisonResult, lifecycleMetricsResult] = await Promise.all([
+      const [current, contextResult, stepsResult, eventsResult, approvalsResult, artifactsResult, evidenceResult, analyticsResult, snapshotsResult, comparisonResult, lifecycleMetricsResult] = await Promise.all([
         request<Run>(`/v1/runs/${run.id}`),
         optional<RunContext>(`/v1/runs/${run.id}/context`, 'Mission context'),
         optional<Step[]>(`/v1/runs/${run.id}/steps`, 'Run steps'),
         optional<Event[]>(`/v1/runs/${run.id}/events`, 'Event timeline'),
         optional<Approval[]>(`/v1/approvals?run_id=${run.id}`, 'Approvals'),
+        optional<TaskArtifact[]>(`/v1/runs/${run.id}/artifacts`, 'Task artifacts'),
         optional<Evidence[]>(`/v1/runs/${run.id}/evidence`, 'Evidence packs'),
         optional<RunAnalytics>(`/v1/runs/${run.id}/analytics`, 'Outcome analytics'),
         optional<Snapshot[]>(`/v1/runs/${run.id}/snapshots`, 'Snapshots'),
@@ -157,6 +173,7 @@ function DashboardApp() {
       const nextSteps = stepsResult.data || []
       const nextEvents = eventsResult.data || []
       const nextApprovals = approvalsResult.data || []
+      const nextArtifacts = artifactsResult.data || []
       const nextEvidence = evidenceResult.data || []
       const nextAnalytics = analyticsResult.data
       const nextSnapshots = snapshotsResult.data || []
@@ -164,12 +181,14 @@ function DashboardApp() {
       const nextLifecycleMetrics = lifecycleMetricsResult.data
       const latestEvidence = [...nextEvidence].sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))[0]
       const organizationId = nextContext?.organization?.id
-      const [projectAggregateResult, organizationAggregateResult, applicationResult, healthResult, fleetResult, jobsResult, supplyChainResult, completenessResult, manifestResult] = await Promise.all([
+      const [projectAggregateResult, organizationAggregateResult, governancePoliciesResult, applicationResult, healthResult, fleetResult, executorsResult, jobsResult, supplyChainResult, completenessResult, manifestResult] = await Promise.all([
         nextContext?.project ? optional<AggregateAnalytics>(`/v1/analytics/projects/${nextContext.project.id}`, 'Project analytics') : Promise.resolve<OptionalData<AggregateAnalytics>>({}),
         organizationId ? optional<AggregateAnalytics>(`/v1/analytics/organizations/${organizationId}`, 'Organization analytics') : Promise.resolve<OptionalData<AggregateAnalytics>>({}),
+        organizationId ? optional<GovernancePolicy[]>(`/v1/organizations/${organizationId}/governance/policies${nextContext?.project ? `?project_id=${nextContext.project.id}` : ''}`, 'Governance policies') : Promise.resolve<OptionalData<GovernancePolicy[]>>({}),
         optional<ApplicationContextFull>(`/v1/tasks/${run.task_id}/application-context`, 'Application context'),
         optional<OperationalHealth>(`/v1/operations/health${organizationId ? `?organization_id=${organizationId}` : ''}`, 'Operational health'),
         organizationId ? optional<ExecutorFleetHealth>(`/v1/executors/health?organization_id=${organizationId}`, 'Executor fleet health') : Promise.resolve<OptionalData<ExecutorFleetHealth>>({}),
+        organizationId ? optional<Executor[]>(`/v1/executors?organization_id=${organizationId}`, 'Executors') : Promise.resolve<OptionalData<Executor[]>>({}),
         organizationId ? optional<ExecutionJob[]>(`/v1/operations/execution/jobs?organization_id=${organizationId}`, 'Execution jobs') : Promise.resolve<OptionalData<ExecutionJob[]>>({}),
         optional<SupplyChainRecord[]>(`/v1/runs/${run.id}/supply-chain/records`, 'Supply-chain records'),
         optional<SupplyChainCompleteness>(`/v1/runs/${run.id}/supply-chain/completeness`, 'Supply-chain completeness'),
@@ -181,16 +200,21 @@ function DashboardApp() {
       setSteps(nextSteps)
       setEvents(nextEvents)
       setApprovals(nextApprovals)
+      setArtifacts(nextArtifacts)
+      setRepositoryDiff(undefined)
       setEvidence(nextEvidence)
       setAnalytics(nextAnalytics)
       setSnapshots(nextSnapshots)
       setComparison(nextComparison)
       setProjectAnalytics(projectAggregateResult.data)
       setOrganizationAnalytics(organizationAggregateResult.data)
+      setGovernancePolicies(governancePoliciesResult.data || [])
       setFullApplication(applicationResult.data)
       setOperationalHealth(healthResult.data)
       setExecutorFleet(fleetResult.data)
+      setExecutors(executorsResult.data || [])
       setExecutionJobs((jobsResult.data || []).filter((job) => job.run_id === run.id))
+      setOrganizationJobs(jobsResult.data || [])
       setSupplyChainRecords(supplyChainResult.data || [])
       setSupplyChainCompleteness(completenessResult.data)
       setEvidenceManifest(manifestResult.data)
@@ -201,6 +225,7 @@ function DashboardApp() {
         stepsResult.unavailable,
         eventsResult.unavailable,
         approvalsResult.unavailable,
+        artifactsResult.unavailable,
         evidenceResult.unavailable,
         analyticsResult.unavailable,
         snapshotsResult.unavailable,
@@ -208,9 +233,11 @@ function DashboardApp() {
         lifecycleMetricsResult.unavailable,
         projectAggregateResult.unavailable,
         organizationAggregateResult.unavailable,
+        governancePoliciesResult.unavailable,
         applicationResult.unavailable,
         healthResult.unavailable,
         fleetResult.unavailable,
+        executorsResult.unavailable,
         jobsResult.unavailable,
         supplyChainResult.unavailable,
         completenessResult.unavailable,
@@ -327,6 +354,96 @@ function DashboardApp() {
     }
   }
 
+  const createMission = async (input: MissionCreateInput) => {
+    setLoading(true)
+    setError('')
+    try {
+      const run = await request<Run>('/v1/runs', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: input.title,
+          description: input.description,
+          target_repo_path: input.target_repo_path || null,
+          source_revision: input.source_revision || null,
+          project_id: input.project_id || null,
+        }),
+      })
+      if (input.startImmediately) await request(`/v1/runs/${run.id}/execute`, { method: 'POST' })
+      await loadRuns()
+      await loadRun(run)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Unable to create mission')
+      throw cause
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const decideApproval = async (approval: Approval, approve: boolean, reason: string) => {
+    if (!selected) return
+    try {
+      await request(`/v1/approvals/${approval.id}/decision`, {
+        method: 'POST',
+        body: JSON.stringify({ approve, reason }),
+      })
+      await loadRun(selected)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Approval decision failed')
+      throw cause
+    }
+  }
+
+  const captureDiff = async () => {
+    if (!selected?.target_repo_path) {
+      setError('A repository path is required to capture a diff.')
+      return
+    }
+    try {
+      const diff = await request<RepositoryDiff>(`/v1/runs/${selected.id}/diff`, {
+        method: 'POST',
+      })
+      setRepositoryDiff(diff)
+      setError('')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Unable to capture repository diff')
+      throw cause
+    }
+  }
+
+  const buildEvidence = async () => {
+    if (!selected) return
+    try {
+      await request(`/v1/runs/${selected.id}/evidence`, { method: 'POST' })
+      await loadRun(selected)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Unable to build evidence')
+      throw cause
+    }
+  }
+
+  const requeueJob = async (job: ExecutionJob, reason: string) => {
+    try {
+      await request(`/v1/operations/execution/jobs/${job.id}/requeue`, {
+        method: 'POST',
+        body: JSON.stringify({ reason, reset_attempts: false }),
+      })
+      if (selected) await loadRun(selected)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Unable to requeue execution job')
+      throw cause
+    }
+  }
+
+  const mutatePolicy = async (policy: GovernancePolicy, operation: 'activate' | 'retire') => {
+    try {
+      await request(`/v1/organizations/${policy.organization_id}/governance/policies/${policy.id}/${operation}`, { method: 'POST' })
+      if (selected) await loadRun(selected)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : `Unable to ${operation} policy`)
+      throw cause
+    }
+  }
+
   const verifyEvidence = async () => {
     if (!selected || !evidence.length) return
     const latestEvidence = [...evidence].sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))[0]
@@ -357,6 +474,8 @@ function DashboardApp() {
     steps={steps}
     events={events}
     approvals={approvals}
+    artifacts={artifacts}
+    repositoryDiff={repositoryDiff}
     evidence={evidence}
     snapshots={snapshots}
     clients={clients}
@@ -364,12 +483,15 @@ function DashboardApp() {
     analytics={analytics}
     projectAnalytics={projectAnalytics}
     organizationAnalytics={organizationAnalytics}
+    governancePolicies={governancePolicies}
     comparison={comparison}
     portfolioAnalytics={portfolioAnalytics}
     fullApplication={fullApplication}
     operationalHealth={operationalHealth}
     executorFleet={executorFleet}
+    executors={executors}
     executionJobs={executionJobs}
+    organizationJobs={organizationJobs}
     supplyChainRecords={supplyChainRecords}
     supplyChainCompleteness={supplyChainCompleteness}
     evidenceManifest={evidenceManifest}
@@ -384,6 +506,13 @@ function DashboardApp() {
     loadRuns={loadRuns}
     loadRun={loadRun}
     action={action}
+    createMission={createMission}
+    decideApproval={decideApproval}
+    captureDiff={captureDiff}
+    buildEvidence={buildEvidence}
+    requeueJob={requeueJob}
+    activatePolicy={(policy) => mutatePolicy(policy, 'activate')}
+    retirePolicy={(policy) => mutatePolicy(policy, 'retire')}
     verifyEvidence={verifyEvidence}
     submitSettings={submitSettings}
   />

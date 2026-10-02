@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from sacm.adapters.repository_adapter import RepositoryAdapter
 from sacm.core.auth_service import (
     production_mode,
     require_authenticated_actor,
@@ -9,6 +10,7 @@ from sacm.core.auth_service import (
 from sacm.core.evidence_service import EvidenceService
 from sacm.core.external_agent_service import ExternalAgentService
 from sacm.core.recovery_service import RecoveryService
+from sacm.core.repository_audit_service import RepositoryAuditService
 from sacm.core.run_context_service import RunContextService
 from sacm.core.run_service import RunService
 from sacm.core.snapshot_service import SnapshotService
@@ -19,7 +21,7 @@ from sacm.core.tenancy_service import (
 )
 from sacm.core.workflow_backend import workflow_backend
 from sacm.core.workflow_queue_service import WorkflowQueueService
-from sacm.infrastructure.db.models import ContextEvent, EvidencePack
+from sacm.infrastructure.db.models import Artifact, ContextEvent, EvidencePack
 from sacm.infrastructure.db.session import get_db
 from sacm.schemas.contracts import (
     ExternalAgentResultSubmit,
@@ -121,6 +123,48 @@ def get_run(
     db: Session = Depends(get_db),
 ) -> RunRead:
     return RunRead.model_validate(_authorize_run(db, run_id, actor, "runs.read"))
+
+
+@router.get("/{run_id}/artifacts")
+def list_run_artifacts(
+    run_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """Return artifacts only after authorizing access to their owning run."""
+    run = _authorize_run(db, run_id, actor, "runs.read")
+    artifacts = db.query(Artifact).filter(Artifact.task_id == run.task_id).all()
+    return [
+        {
+            "id": artifact.id,
+            "artifact_type": artifact.artifact_type,
+            "path": artifact.path,
+            "content_hash": artifact.content_hash,
+            "metadata": artifact.metadata_,
+            "created_at": artifact.created_at,
+        }
+        for artifact in artifacts
+    ]
+
+
+@router.post("/{run_id}/diff")
+def capture_run_diff(
+    run_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Capture a scoped delivery diff without accepting an arbitrary path from the UI."""
+    run = _authorize_run(db, run_id, actor, "runs.read")
+    if not run.target_repo_path:
+        raise HTTPException(status_code=409, detail="Run repository path is not recorded.")
+    adapter = RepositoryAdapter(run.target_repo_path)
+    diff = adapter.get_diff()
+    summary = RepositoryAuditService.content_summary(diff)
+    return {
+        "diff": diff,
+        "sha256": summary["sha256"],
+        "changed_files": RepositoryAuditService.changed_files(diff),
+    }
 
 
 @router.get(

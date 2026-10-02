@@ -7,9 +7,10 @@ Dependency-free React/Vite enterprise UI for the SACM control plane.
 - **Command Center** — authorized outcome, cost, coverage, policy/security,
   executor-capacity, SLO, backup and audit signals. Missing and legacy values
   are explicit; `SUCCESS` is labeled as an accepted proxy, not human acceptance.
-- **Missions** — Jira/task source, Definition of Ready and clarifications,
-  risk-based autonomy, plans, agents/models/frameworks, approvals, execution
-  jobs, Change Journey events, verification, snapshots/replay and cost.
+- **Missions** — create and optionally start a governed mission; review its
+  Jira/task source, readiness, plan, agents, approval gates, execution jobs,
+  captured repository diff, durable artifacts, draft-PR handoff, evidence,
+  replay and cost. Approval decisions require a recorded rationale.
 - **Applications** — accessible grouped application graph with impacted nodes
   and an edge list; no graph-rendering dependency.
 - **Agents / Benchmarks** — persisted agent outcomes, sample sufficiency and
@@ -22,6 +23,8 @@ Dependency-free React/Vite enterprise UI for the SACM control plane.
 
 The global <kbd>Command</kbd>+<kbd>K</kbd> palette supports navigation,
 mission filtering and safe UI actions only; it never executes shell commands.
+Repository diff capture is scoped to the selected run's recorded repository;
+the browser never submits an arbitrary repository path.
 The layout includes semantic controls, keyboard focus, responsive breakpoints,
 high-contrast states and reduced-motion support.
 

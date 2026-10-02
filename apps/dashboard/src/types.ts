@@ -40,6 +40,32 @@ export type Approval = {
   requested_at: string
   decided_at?: string | null
   resource: Record<string, unknown>
+  decided_by?: string | null
+  decision_reason?: string | null
+}
+
+export type TaskArtifact = {
+  id: string
+  artifact_type: string
+  path: string
+  content_hash: string
+  metadata: Record<string, unknown>
+  created_at: string
+}
+
+export type RepositoryDiff = {
+  diff: string
+  sha256: string
+  changed_files: string[]
+}
+
+export type MissionCreateInput = {
+  title: string
+  description: string
+  target_repo_path?: string
+  source_revision?: string
+  project_id?: string
+  startImmediately: boolean
 }
 
 export type Evidence = {
@@ -402,6 +428,23 @@ export type ExecutorFleetHealth = {
   slo: Record<string, unknown>
 }
 
+export type Executor = {
+  id: string
+  scope_key: string
+  display_name: string
+  executor_identity: string
+  capabilities: string[]
+  labels: Record<string, string>
+  runtime_kind: string
+  sandbox_runtime: string
+  status: string
+  last_heartbeat_at?: string | null
+  version: string
+  storage_region?: string | null
+  storage_classification?: string | null
+  revoked_at?: string | null
+}
+
 export type ExecutionJob = {
   id: string
   run_id: string
@@ -439,6 +482,23 @@ export type SupplyChainCompleteness = {
   mandatory_types: string[]
   present_types: string[]
   missing_types: string[]
+}
+
+export type GovernancePolicy = {
+  id: string
+  organization_id: string
+  project_id?: string | null
+  scope_key: string
+  name: string
+  version: number
+  status: string
+  description: string
+  created_by: string
+  activated_by?: string | null
+  created_at: string
+  activated_at?: string | null
+  retired_at?: string | null
+  rules: Record<string, unknown>[]
 }
 
 export type EvidenceVerification = {
@@ -530,6 +590,8 @@ export type DashboardProps = {
   steps: Step[]
   events: Event[]
   approvals: Approval[]
+  artifacts: TaskArtifact[]
+  repositoryDiff?: RepositoryDiff
   evidence: Evidence[]
   snapshots: Snapshot[]
   clients: Client[]
@@ -537,12 +599,15 @@ export type DashboardProps = {
   analytics?: RunAnalytics
   projectAnalytics?: AggregateAnalytics
   organizationAnalytics?: AggregateAnalytics
+  governancePolicies: GovernancePolicy[]
   comparison?: ReplayComparison
   portfolioAnalytics: RunAnalytics[]
   fullApplication?: ApplicationContextFull
   operationalHealth?: OperationalHealth
   executorFleet?: ExecutorFleetHealth
+  executors: Executor[]
   executionJobs: ExecutionJob[]
+  organizationJobs: ExecutionJob[]
   supplyChainRecords: SupplyChainRecord[]
   supplyChainCompleteness?: SupplyChainCompleteness
   evidenceManifest?: Record<string, unknown>
@@ -557,6 +622,13 @@ export type DashboardProps = {
   loadRuns: () => Promise<void>
   loadRun: (run: Run) => Promise<void>
   action: (path: string, body?: Record<string, unknown>) => Promise<void>
+  createMission: (input: MissionCreateInput) => Promise<void>
+  decideApproval: (approval: Approval, approve: boolean, reason: string) => Promise<void>
+  captureDiff: () => Promise<void>
+  buildEvidence: () => Promise<void>
+  requeueJob: (job: ExecutionJob, reason: string) => Promise<void>
+  activatePolicy: (policy: GovernancePolicy) => Promise<void>
+  retirePolicy: (policy: GovernancePolicy) => Promise<void>
   verifyEvidence: () => Promise<void>
   submitSettings: (event: FormEvent) => void
 }

@@ -7,6 +7,7 @@ export type DashboardView =
   | 'passports'
   | 'benchmarks'
   | 'security'
+  | 'operations'
   | 'settings'
 
 export const navigationItems: { id: DashboardView; label: string; short: string }[] = [
@@ -18,4 +19,5 @@ export const navigationItems: { id: DashboardView; label: string; short: string 
   { id: 'passports', label: 'Evidence & Passports', short: 'E' },
   { id: 'benchmarks', label: 'Benchmarks', short: 'B' },
   { id: 'security', label: 'Security', short: 'S' },
+  { id: 'operations', label: 'Operations', short: 'O' },
 ]
