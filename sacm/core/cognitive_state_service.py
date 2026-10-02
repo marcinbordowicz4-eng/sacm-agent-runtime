@@ -29,6 +29,7 @@ from sacm.schemas.cognitive_state import (
     AgentHandoffCreateV1,
     AgentHandoffV1,
     CognitiveContextV1,
+    CognitiveDeliveryPassportV1,
     CognitiveEventCreateV1,
     CognitiveEventV1,
     CognitiveRelationCreateV1,
@@ -389,6 +390,185 @@ class CognitiveStateService:
             created_at=event.created_at,
         )
 
+    def record_delivery_completion(
+        self,
+        project_id: str,
+        *,
+        delivery_id: str,
+        task_id: str,
+        run_id: str,
+        actor_id: str,
+        requirement_ids: list[str],
+        evidence: list[dict[str, Any]],
+        pull_request: dict[str, str | None],
+        traceability: dict[str, Any],
+        source_revision: str | None = None,
+    ) -> dict[str, Any]:
+        """Anchor a completed delivery in the project cognitive history.
+
+        The Jira/run data model is authoritative for delivery execution.  This
+        projection makes that outcome explainable alongside commit-level
+        provenance without guessing that a run's base revision is its output
+        revision.  A commit is attached only when it was already indexed in
+        this project's Git-backed cognitive history.
+        """
+        self._project(project_id)
+        existing = next(
+            (
+                item
+                for item in self._events(project_id, as_of=None, limit=10_000)
+                if item.event_type == "DELIVERY_COMPLETED"
+                and item.payload.get("delivery_id") == delivery_id
+            ),
+            None,
+        )
+        if existing is not None:
+            snapshot = self._delivery_snapshot(project_id, delivery_id)
+            return {
+                "event": self._event_read(existing),
+                "snapshot": self._snapshot_read(snapshot),
+                "idempotent": True,
+            }
+
+        indexed_commit = None
+        if source_revision:
+            indexed = (
+                self.db.query(CognitiveEvent)
+                .filter(
+                    CognitiveEvent.project_id == project_id,
+                    CognitiveEvent.event_type == "COMMIT_CREATED",
+                    CognitiveEvent.commit_hash == source_revision,
+                )
+                .first()
+            )
+            indexed_commit = source_revision if indexed is not None else None
+
+        event = self.record_event(
+            project_id,
+            CognitiveEventCreateV1(
+                event_type="DELIVERY_COMPLETED",
+                agent_id=actor_id,
+                commit_hash=indexed_commit,
+                payload={
+                    "delivery_id": delivery_id,
+                    "task_id": task_id,
+                    "run_id": run_id,
+                    "requirement_ids": requirement_ids,
+                    "evidence": evidence,
+                    "pull_request": pull_request,
+                    "traceability": traceability,
+                    "source_revision": source_revision,
+                },
+            ),
+            commit=False,
+        )
+        relations = [
+            ("DELIVERY", delivery_id, "TASK", task_id, "DELIVERS"),
+            ("DELIVERY", delivery_id, "RUN", run_id, "COMPLETES"),
+            ("DELIVERY", delivery_id, "AGENT", actor_id, "CREATED_BY"),
+        ]
+        relations.extend(
+            ("DELIVERY", delivery_id, "REQUIREMENT", requirement_id, "SATISFIES")
+            for requirement_id in requirement_ids
+        )
+        relations.extend(
+            ("DELIVERY", delivery_id, "EVIDENCE", str(item["id"]), "PROVEN_BY")
+            for item in evidence
+            if item.get("id")
+        )
+        if pull_request.get("url"):
+            relations.append(
+                ("DELIVERY", delivery_id, "PULL_REQUEST", pull_request["url"], "PROPOSES")
+            )
+        if indexed_commit:
+            relations.append(("DELIVERY", delivery_id, "COMMIT", indexed_commit, "DELIVERS"))
+        for source_type, source_id, target_type, target_id, relation in relations:
+            self.db.add(
+                self._relation(
+                    project_id,
+                    CognitiveRelationCreateV1(
+                        source_type=source_type,
+                        source_id=source_id,
+                        target_type=target_type,
+                        target_id=target_id,
+                        relation=relation,
+                        commit_hash=indexed_commit,
+                    ),
+                    event,
+                )
+            )
+        self.db.commit()
+
+        snapshot = self.create_snapshot(
+            project_id,
+            commit_hash=indexed_commit,
+            snapshot_type="FEATURE",
+            reason=f"delivery_completed:{delivery_id}",
+        )
+        # The snapshot is created after the delivery event so it includes the
+        # outcome and all proof edges; the link itself remains an immutable
+        # piece of provenance.
+        self.add_relation(
+            project_id,
+            CognitiveRelationCreateV1(
+                source_type="DELIVERY",
+                source_id=delivery_id,
+                target_type="SNAPSHOT",
+                target_id=snapshot.id,
+                relation="PART_OF",
+                commit_hash=indexed_commit,
+            ),
+            actor_id=actor_id,
+        )
+        return {
+            "event": self._event_read(event),
+            "snapshot": self._snapshot_read(snapshot),
+            "idempotent": False,
+        }
+
+    def delivery_passport(
+        self, project_id: str, delivery_id: str
+    ) -> CognitiveDeliveryPassportV1:
+        """Return a human and machine-readable passport grounded in evidence."""
+        self._project(project_id)
+        event = next(
+            (
+                item
+                for item in self._events(project_id, as_of=None, limit=10_000)
+                if item.event_type == "DELIVERY_COMPLETED"
+                and item.payload.get("delivery_id") == delivery_id
+            ),
+            None,
+        )
+        if event is None:
+            raise CognitiveStateNotFoundError("Cognitive delivery not found.")
+        snapshot = self._delivery_snapshot(project_id, delivery_id)
+        relations = (
+            self.db.query(CognitiveRelation)
+            .filter(
+                CognitiveRelation.project_id == project_id,
+                CognitiveRelation.source_type == "DELIVERY",
+                CognitiveRelation.source_id == delivery_id,
+            )
+            .order_by(CognitiveRelation.valid_from, CognitiveRelation.id)
+            .all()
+        )
+        payload = event.payload
+        return CognitiveDeliveryPassportV1(
+            project_id=project_id,
+            delivery_id=delivery_id,
+            task_id=str(payload["task_id"]),
+            run_id=str(payload["run_id"]),
+            source_revision=payload.get("source_revision"),
+            requirements=list(payload.get("requirement_ids", [])),
+            evidence=list(payload.get("evidence", [])),
+            pull_request=dict(payload.get("pull_request", {})),
+            traceability=dict(payload.get("traceability", {})),
+            event=self._event_read(event),
+            snapshot=self._snapshot_read(snapshot),
+            provenance=[self._relation_read(item) for item in relations],
+        )
+
     def create_snapshot(
         self,
         project_id: str,
@@ -630,6 +810,23 @@ class CognitiveStateService:
         if project is None:
             raise CognitiveStateNotFoundError("Project not found.")
         return project
+
+    def _delivery_snapshot(
+        self, project_id: str, delivery_id: str
+    ) -> CognitiveSnapshot | None:
+        relation = (
+            self.db.query(CognitiveRelation)
+            .filter(
+                CognitiveRelation.project_id == project_id,
+                CognitiveRelation.source_type == "DELIVERY",
+                CognitiveRelation.source_id == delivery_id,
+                CognitiveRelation.target_type == "SNAPSHOT",
+                CognitiveRelation.relation == "PART_OF",
+            )
+            .order_by(CognitiveRelation.valid_from.desc(), CognitiveRelation.id.desc())
+            .first()
+        )
+        return self.snapshot(project_id, snapshot_id=relation.target_id) if relation else None
 
     def _lock_project(self, project_id: str) -> Project:
         """Serialize one project's hash chain when the backing store supports it."""

@@ -14,6 +14,7 @@ from sacm.schemas.cognitive_state import (
     AgentHandoffCreateV1,
     AgentHandoffV1,
     CognitiveContextV1,
+    CognitiveDeliveryPassportV1,
     CognitiveEventCreateV1,
     CognitiveEventV1,
     CognitiveRelationCreateV1,
@@ -202,6 +203,23 @@ def get_snapshot(
     result = CognitiveStateService._snapshot_read(snapshot)
     assert result is not None
     return result
+
+
+@router.get(
+    "/projects/{project_id}/cognitive/deliveries/{delivery_id}/passport",
+    response_model=CognitiveDeliveryPassportV1,
+)
+def delivery_passport(
+    project_id: str,
+    delivery_id: str,
+    actor: str = Depends(require_authenticated_actor),
+    db: Session = Depends(get_db),
+) -> CognitiveDeliveryPassportV1:
+    _authorize(db, project_id, actor, "tasks.read")
+    try:
+        return CognitiveStateService(db).delivery_passport(project_id, delivery_id)
+    except CognitiveStateError as exc:
+        raise _service_error(exc) from exc
 
 
 @router.get("/projects/{project_id}/cognitive/state")

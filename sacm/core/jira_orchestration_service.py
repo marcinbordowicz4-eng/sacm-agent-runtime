@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from sacm.adapters.github_adapter import GitHubAdapter
 from sacm.core.application_context_service import ApplicationContextService
+from sacm.core.cognitive_state_service import CognitiveStateService
 from sacm.core.execution_plane_service import ExecutionPlaneService
 from sacm.core.execution_planning_service import ExecutionPlanningService
 from sacm.core.jira_service import JiraService
@@ -22,6 +23,7 @@ from sacm.infrastructure.db.models import (
     ExecutorRegistration,
     JiraConnector,
     JiraDeliveryState,
+    Requirement,
     Run,
     Task,
 )
@@ -140,7 +142,57 @@ class JiraOrchestrationService:
             run_id=run.id,
         )
         self.db.commit()
+        cognitive = self._record_cognitive_delivery(task, run, state, actor)
+        state.context = {**(state.context or {}), "cognitive_delivery": cognitive}
+        self.db.commit()
         return self._read(state, self._jobs(run.id))
+
+    def _record_cognitive_delivery(
+        self,
+        task: Task,
+        run: Run,
+        state: JiraDeliveryState,
+        actor: str,
+    ) -> dict[str, Any]:
+        """Create the immutable delivery-to-evidence projection for Jira."""
+        requirements = (
+            self.db.query(Requirement.id)
+            .filter(Requirement.task_id == task.id)
+            .order_by(Requirement.position)
+            .all()
+        )
+        packs = (
+            self.db.query(EvidencePack)
+            .filter(EvidencePack.run_id == run.id)
+            .order_by(EvidencePack.created_at, EvidencePack.id)
+            .all()
+        )
+        traceability = (state.context or {}).get("traceability", {})
+        result = CognitiveStateService(self.db).record_delivery_completion(
+            task.project_id or state.project_id,
+            delivery_id=state.id,
+            task_id=task.id,
+            run_id=run.id,
+            actor_id=actor,
+            requirement_ids=[item.id for item in requirements],
+            evidence=[
+                {
+                    "id": pack.id,
+                    "manifest_hash": pack.manifest_hash,
+                    "verification_status": pack.verification_status,
+                }
+                for pack in packs
+            ],
+            pull_request={"status": state.pr_status, "url": state.pr_url},
+            traceability=traceability if isinstance(traceability, dict) else {},
+            source_revision=run.source_revision,
+        )
+        return {
+            "delivery_id": state.id,
+            "event_id": result["event"].id,
+            "snapshot_id": result["snapshot"].id if result["snapshot"] else None,
+            "idempotent": result["idempotent"],
+        }
 
     def _run(self, task: Task) -> Run:
         existing = (

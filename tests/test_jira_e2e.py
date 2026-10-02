@@ -8,16 +8,22 @@ import httpx
 import pytest
 
 from sacm.connectors.jira import JiraCloudClient, adf_document, adf_text
+from sacm.core.cognitive_state_service import CognitiveStateService
 from sacm.core.jira_orchestration_service import JiraOrchestrationService
 from sacm.core.jira_service import JiraService
 from sacm.core.tenancy_service import AuthorizationError
 from sacm.demo.jira_e2e import DemoJiraTransport, run_demo
 from sacm.infrastructure.db.models import (
+    CognitiveEvent,
+    CognitiveRelation,
+    CognitiveSnapshot,
+    EvidencePack,
     JiraConnector,
     JiraConnectorOperation,
     Membership,
     Organization,
     Project,
+    Run,
     Task,
     TaskClarification,
 )
@@ -298,3 +304,88 @@ def test_full_offline_jira_e2e_demo_uses_real_sacm_services():
     assert result["delivery_status"] == "WAITING_FOR_EXECUTOR"
     assert result["evidence_status"] == "pending real executor completion"
     assert result["pr_status"] == "PR_NOT_CONFIGURED"
+
+
+def test_completed_jira_delivery_creates_idempotent_cognitive_feature_snapshot(
+    db, tmp_path
+):
+    _, _, connector = _tenant(db, tmp_path)
+    service = _service(db)
+    intake = service.process_webhook(
+        connector, _issue(connector, tmp_path), delivery_id="delivery-cognitive"
+    )
+    task = db.get(Task, intake.task_id)
+    assert task is not None
+    task.readiness_details = {"ready": True, "missing_fields": []}
+    task.task_contract = {
+        **(task.task_contract or {}),
+        "acceptance_criteria": ["The contract remains compatible."],
+    }
+    db.commit()
+
+    orchestration = JiraOrchestrationService(db, jira=service).orchestrate(
+        connector, task.id, actor="admin-one", create_pull_request=False
+    )
+    run = db.get(Run, orchestration.run_id)
+    assert run is not None
+    run.status = "COMPLETED"
+    db.add(
+        EvidencePack(
+            organization_id=task.organization_id,
+            project_id=task.project_id,
+            run_id=run.id,
+            path="evidence/delivery.json",
+            manifest_hash="manifest-hash",
+            verification_status="VALID",
+        )
+    )
+    db.commit()
+
+    finalized = JiraOrchestrationService(db, jira=service).finalize(
+        connector, task.id, actor="admin-one", create_pull_request=False
+    )
+    cognitive = finalized.details["cognitive_delivery"]
+    assert cognitive["idempotent"] is False
+    assert cognitive["snapshot_id"]
+    assert (
+        db.query(CognitiveEvent)
+        .filter(
+            CognitiveEvent.project_id == connector.project_id,
+            CognitiveEvent.event_type == "DELIVERY_COMPLETED",
+        )
+        .count()
+        == 1
+    )
+    snapshot = db.get(CognitiveSnapshot, cognitive["snapshot_id"])
+    assert snapshot is not None
+    assert snapshot.snapshot_type == "FEATURE"
+    assert snapshot.state["requirements"]
+    requirement_edge = (
+        db.query(CognitiveRelation)
+        .filter(
+            CognitiveRelation.source_type == "DELIVERY",
+            CognitiveRelation.target_type == "REQUIREMENT",
+            CognitiveRelation.relation == "SATISFIES",
+        )
+        .one()
+    )
+    assert requirement_edge.target_id in snapshot.state["requirements"]
+
+    second = JiraOrchestrationService(db, jira=service).finalize(
+        connector, task.id, actor="admin-one", create_pull_request=False
+    )
+    assert second.details["cognitive_delivery"]["idempotent"] is True
+    assert second.details["cognitive_delivery"]["snapshot_id"] == cognitive["snapshot_id"]
+    passport = CognitiveStateService(db).delivery_passport(
+        connector.project_id, finalized.details["cognitive_delivery"]["delivery_id"]
+    )
+    assert passport.delivery_id == finalized.details["cognitive_delivery"]["delivery_id"]
+    assert passport.snapshot is not None
+    assert passport.snapshot.id == cognitive["snapshot_id"]
+    assert passport.requirements == snapshot.state["requirements"]
+    assert (
+        db.query(CognitiveEvent)
+        .filter(CognitiveEvent.event_type == "DELIVERY_COMPLETED")
+        .count()
+        == 1
+    )

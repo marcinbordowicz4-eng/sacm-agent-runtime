@@ -166,6 +166,26 @@ class CognitiveContextV1(BaseModel):
     provenance: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class CognitiveDeliveryPassportV1(BaseModel):
+    """Read-only evidence view for one completed software delivery."""
+
+    schema_version: Literal["cognitive-delivery-passport/v1"] = (
+        "cognitive-delivery-passport/v1"
+    )
+    project_id: str
+    delivery_id: str
+    task_id: str
+    run_id: str
+    source_revision: str | None = None
+    requirements: list[str] = Field(default_factory=list)
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    pull_request: dict[str, str | None] = Field(default_factory=dict)
+    traceability: dict[str, Any] = Field(default_factory=dict)
+    event: CognitiveEventV1
+    snapshot: CognitiveSnapshotV1 | None = None
+    provenance: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class ExplainFileV1(BaseModel):
     schema_version: Literal["cognitive-explain-file/v1"] = "cognitive-explain-file/v1"
     project_id: str
