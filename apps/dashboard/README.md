@@ -19,7 +19,10 @@ Dependency-free React/Vite enterprise UI for the SACM control plane.
   with recorded reasons, findings and supply-chain status.
 - **Evidence & Passports** — Software Change Passport data, integrity
   verification and JSON export when an Evidence Pack exists.
-- **Settings** — the only surface for API URL, actor and bearer-token setup.
+- **Settings** — API URL, actor and bearer-token setup plus a resumable,
+  API-backed first-mission checklist. It creates organizations and projects,
+  can explicitly activate a reviewable onboarding policy, and issues a
+  short-lived executor enrollment token without persisting that secret.
 
 The global <kbd>Command</kbd>+<kbd>K</kbd> palette supports navigation,
 mission filtering and safe UI actions only; it never executes shell commands.
@@ -35,7 +38,22 @@ npm install
 npm run dev
 ```
 
-Set `VITE_SACM_API_URL` when the API is not proxied through `/api`.
+Set `VITE_SACM_API_URL` when the API is not proxied through `/api`. The chosen
+API URL and incomplete onboarding draft are retained in browser local storage;
+the bearer token and executor enrollment token are deliberately memory-only.
+
+For a separately hosted production dashboard, configure the API with the exact
+browser origins (comma separated), for example:
+
+```bash
+SACM_CORS_ORIGINS=https://console.example.com
+```
+
+Do not use a wildcard origin: Mission Control sends tenant-scoped authorization
+headers. The API returns `X-Request-ID` so a connection error can be correlated
+with server logs. A deployment must route the dashboard itself and its `/api`
+path (or set `VITE_SACM_API_URL` to the API origin); serving only the API does
+not serve Mission Control.
 
 ## Validate
 

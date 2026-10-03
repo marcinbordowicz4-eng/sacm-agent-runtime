@@ -134,6 +134,7 @@ export type Client = {
     id: string
     name: string
     repository_full_name?: string | null
+    repository_path?: string | null
   }[]
 }
 
@@ -648,6 +649,22 @@ export type ExpertBenchmarkAssessment = {
   }[]
 }
 
+export type ConnectionState = {
+  kind: 'checking' | 'connected' | 'empty' | 'authentication_required' | 'permission_denied' | 'configuration_required' | 'api_unavailable' | 'api_error'
+  title: string
+  detail: string
+  next_step: string
+  request_id?: string
+}
+
+export type OnboardingStatus = {
+  organization: 'complete' | 'incomplete'
+  repository: 'complete' | 'incomplete'
+  executor: 'complete' | 'incomplete' | 'unknown'
+  policy: 'complete' | 'incomplete' | 'unknown'
+  mission: 'complete' | 'incomplete'
+}
+
 export type DashboardProps = {
   baseUrl: string
   setBaseUrl: Dispatch<SetStateAction<string>>
@@ -689,6 +706,8 @@ export type DashboardProps = {
   expertBenchmarkAssessment?: ExpertBenchmarkAssessment
   progress?: WorkflowProgress
   progressError: string
+  connection: ConnectionState
+  onboarding: OnboardingStatus
   error: string
   unavailableData: string[]
   loading: boolean
@@ -704,5 +723,9 @@ export type DashboardProps = {
   activatePolicy: (policy: GovernancePolicy) => Promise<void>
   retirePolicy: (policy: GovernancePolicy) => Promise<void>
   verifyEvidence: () => Promise<void>
+  createOrganization: (input: { slug: string; name: string }) => Promise<void>
+  createProject: (input: { organizationId: string; slug: string; name: string; repositoryPath?: string; repositoryFullName?: string }) => Promise<void>
+  createBaselinePolicy: (organizationId: string, region: string) => Promise<void>
+  createEnrollmentToken: (organizationId: string) => Promise<{ enrollment_token: string; expires_at: string }>
   submitSettings: (event: FormEvent) => void
 }

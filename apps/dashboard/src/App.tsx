@@ -7,6 +7,7 @@ import type {
   ApplicationContextFull,
   Approval,
   Client,
+  ConnectionState,
   CognitiveDeliveryPassport,
   Evidence,
   EvidenceVerification,
@@ -24,6 +25,7 @@ import type {
   RunAnalytics,
   RunContext,
   MissionCreateInput,
+  OnboardingStatus,
   RepositoryDiff,
   Snapshot,
   Step,
@@ -36,10 +38,12 @@ import type {
 
 class ApiRequestError extends Error {
   readonly status: number
+  readonly requestId: string
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, requestId: string) {
     super(message)
     this.status = status
+    this.requestId = requestId
   }
 }
 
@@ -47,6 +51,58 @@ type OptionalData<T> = {
   data?: T
   unavailable?: string
 }
+
+const savedApiUrl = () => localStorage.getItem('sacm-api-url') || import.meta.env.VITE_SACM_API_URL || '/api'
+
+const newRequestId = () => globalThis.crypto?.randomUUID?.() || `sacm-${Date.now()}-${Math.random().toString(16).slice(2)}`
+
+const connectionForError = (cause: unknown): ConnectionState => {
+  if (!(cause instanceof ApiRequestError)) {
+    return {
+      kind: 'api_unavailable',
+      title: 'SACM API cannot be reached',
+      detail: 'The browser could not complete the request.',
+      next_step: 'Check the API URL, TLS certificate, CORS origin and network route, then retry.',
+    }
+  }
+  if (cause.status === 0) return {
+    kind: 'api_unavailable',
+    title: 'SACM API cannot be reached',
+    detail: cause.message,
+    next_step: 'Check the API URL, TLS certificate, CORS origin and network route, then retry.',
+    request_id: cause.requestId,
+  }
+  if (cause.status === 401) return {
+    kind: 'authentication_required',
+    title: 'Authentication is required',
+    detail: cause.message,
+    next_step: 'Enter a valid bearer token in Settings, or use an authenticated SACM identity.',
+    request_id: cause.requestId,
+  }
+  if (cause.status === 403) return {
+    kind: 'permission_denied',
+    title: 'You do not have access to this workspace',
+    detail: cause.message,
+    next_step: 'Ask an organization owner to grant the required role or tenant permission.',
+    request_id: cause.requestId,
+  }
+  if (cause.status === 404) return {
+    kind: 'configuration_required',
+    title: 'The configured API path is not a SACM endpoint',
+    detail: cause.message,
+    next_step: 'Set the API URL to the SACM origin or its reverse-proxy /api path, then reconnect.',
+    request_id: cause.requestId,
+  }
+  return {
+    kind: 'api_error',
+    title: 'SACM API returned an error',
+    detail: cause.message,
+    next_step: 'Retry once; if it persists, give the diagnostic ID to the platform operator.',
+    request_id: cause.requestId,
+  }
+}
+
+const connectionMessage = (state: ConnectionState) => `${state.title}: ${state.detail}${state.request_id ? ` (diagnostic ${state.request_id})` : ''}`
 
 function cognitiveDeliveryId(context?: RunContext): string | undefined {
   const candidate = context?.jira_delivery?.context?.cognitive_delivery
@@ -56,7 +112,7 @@ function cognitiveDeliveryId(context?: RunContext): string | undefined {
 }
 
 function DashboardApp() {
-  const [baseUrl, setBaseUrl] = useState(import.meta.env.VITE_SACM_API_URL || '/api')
+  const [baseUrl, setBaseUrl] = useState(savedApiUrl)
   const [actor, setActor] = useState(localStorage.getItem('sacm-actor') || 'local-admin')
   const [token, setToken] = useState('')
   const [runs, setRuns] = useState<Run[]>([])
@@ -93,6 +149,19 @@ function DashboardApp() {
   const [expertBenchmarkAssessment, setExpertBenchmarkAssessment] = useState<ExpertBenchmarkAssessment>()
   const [progress, setProgress] = useState<WorkflowProgress>()
   const [progressError, setProgressError] = useState('')
+  const [connection, setConnection] = useState<ConnectionState>({
+    kind: 'checking',
+    title: 'Checking SACM API',
+    detail: 'Connecting to the configured endpoint.',
+    next_step: 'Wait for the connection check to complete.',
+  })
+  const [onboarding, setOnboarding] = useState<OnboardingStatus>({
+    organization: 'incomplete',
+    repository: 'incomplete',
+    executor: 'unknown',
+    policy: 'unknown',
+    mission: 'incomplete',
+  })
   const [error, setError] = useState('')
   const [unavailableData, setUnavailableData] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
@@ -100,11 +169,21 @@ function DashboardApp() {
   const clientsLoadGeneration = useRef(0)
 
   const request = async <T,>(path: string, init?: RequestInit): Promise<T> => {
+    const requestId = newRequestId()
+    const configuredBaseUrl = baseUrl.trim().replace(/\/$/, '')
+    if (!configuredBaseUrl) throw new ApiRequestError(404, 'API URL is empty.', requestId)
     const headers = new Headers(init?.headers)
     headers.set('X-SACM-Actor', actor)
+    headers.set('X-Request-ID', requestId)
     if (token) headers.set('Authorization', `Bearer ${token}`)
     if (init?.body) headers.set('Content-Type', 'application/json')
-    const response = await fetch(`${baseUrl}${path}`, { ...init, headers })
+    let response: Response
+    try {
+      response = await fetch(`${configuredBaseUrl}${path}`, { ...init, headers })
+    } catch {
+      throw new ApiRequestError(0, 'Network request failed before SACM returned a response. Verify the endpoint, TLS, CORS and network access.', requestId)
+    }
+    const responseRequestId = response.headers.get('X-Request-ID') || requestId
     if (!response.ok) {
       const body = await response.text()
       let message = body
@@ -116,7 +195,7 @@ function DashboardApp() {
       } catch {
         // Keep a non-JSON response as the endpoint's diagnostic.
       }
-      throw new ApiRequestError(response.status, message || `${response.status} ${response.statusText}`)
+      throw new ApiRequestError(response.status, message || `${response.status} ${response.statusText}`, responseRequestId)
     }
     return response.json() as Promise<T>
   }
@@ -126,7 +205,7 @@ function DashboardApp() {
       return { data: await request<T>(path) }
     } catch (cause) {
       const message = cause instanceof ApiRequestError
-        ? `${label}: ${cause.status} ${cause.message}`
+        ? `${label}: ${cause.status} ${cause.message}${cause.requestId ? ` (diagnostic ${cause.requestId})` : ''}`
         : `${label}: unavailable`
       return { unavailable: message }
     }
@@ -303,6 +382,12 @@ function DashboardApp() {
     const generation = ++loadGeneration.current
     setLoading(true)
     setError('')
+    setConnection({
+      kind: 'checking',
+      title: 'Checking SACM API',
+      detail: 'Loading authorized missions.',
+      next_step: 'Wait for the connection check to complete.',
+    })
     setUnavailableData([])
     try {
       const [nextRuns, benchmarkResult] = await Promise.all([
@@ -311,6 +396,19 @@ function DashboardApp() {
       ])
       if (generation !== loadGeneration.current) return
       setRuns(nextRuns)
+      setConnection(nextRuns.length
+        ? {
+            kind: 'connected',
+            title: 'Connected to SACM API',
+            detail: 'Authorized mission data was loaded.',
+            next_step: 'Review a mission or create a new one.',
+          }
+        : {
+            kind: 'empty',
+            title: 'Connected, with no missions yet',
+            detail: 'SACM returned an empty authorized mission set; this is not a zero-value telemetry claim.',
+            next_step: 'Complete onboarding, then create the first mission.',
+          })
       setExpertBenchmarkAssessment(benchmarkResult.data)
       const analyticsResults = await Promise.all(nextRuns.map((run) => optional<RunAnalytics>(`/v1/runs/${run.id}/analytics`, `Outcome analytics for ${run.id}`)))
       if (generation !== loadGeneration.current) return
@@ -326,7 +424,11 @@ function DashboardApp() {
         ].filter((item): item is string => Boolean(item)))
       }
     } catch (cause) {
-      if (generation === loadGeneration.current) setError(cause instanceof Error ? cause.message : 'Unable to load missions')
+      if (generation === loadGeneration.current) {
+        const state = connectionForError(cause)
+        setConnection(state)
+        setError(connectionMessage(state))
+      }
     } finally {
       if (generation === loadGeneration.current) setLoading(false)
     }
@@ -342,12 +444,35 @@ function DashboardApp() {
       }))
       if (generation !== clientsLoadGeneration.current) return
       setClients(populated.map(({ unavailable: _, ...organization }) => organization))
-      const unavailable = populated.flatMap((organization) => organization.unavailable ? [organization.unavailable] : [])
+      const setupChecks = await Promise.all(populated.map(async (organization) => {
+        const [executorResult, policyResult] = await Promise.all([
+          optional<Executor[]>(`/v1/executors?organization_id=${organization.id}`, `Executors for ${organization.name}`),
+          optional<GovernancePolicy[]>(`/v1/organizations/${organization.id}/governance/policies`, `Policies for ${organization.name}`),
+        ])
+        return { executorResult, policyResult }
+      }))
+      if (generation !== clientsLoadGeneration.current) return
+      const hasRepository = populated.some((organization) => organization.projects.some((project) => Boolean(project.repository_full_name || project.repository_path)))
+      const executorUnknown = setupChecks.some((check) => Boolean(check.executorResult.unavailable))
+      const policyUnknown = setupChecks.some((check) => Boolean(check.policyResult.unavailable))
+      setOnboarding({
+        organization: populated.length ? 'complete' : 'incomplete',
+        repository: hasRepository ? 'complete' : 'incomplete',
+        executor: !populated.length ? 'incomplete' : executorUnknown ? 'unknown' : setupChecks.some((check) => (check.executorResult.data || []).length > 0) ? 'complete' : 'incomplete',
+        policy: !populated.length ? 'incomplete' : policyUnknown ? 'unknown' : setupChecks.some((check) => (check.policyResult.data || []).some((policy) => policy.status === 'ACTIVE')) ? 'complete' : 'incomplete',
+        mission: runs.length ? 'complete' : 'incomplete',
+      })
+      const unavailable = [
+        ...populated.flatMap((organization) => organization.unavailable ? [organization.unavailable] : []),
+        ...setupChecks.flatMap((check) => [check.executorResult.unavailable, check.policyResult.unavailable]),
+      ].filter((item): item is string => Boolean(item))
       if (unavailable.length) setUnavailableData((current) => [...current, ...unavailable])
     } catch (cause) {
       if (generation === clientsLoadGeneration.current) {
         setClients([])
-        setError(cause instanceof Error ? cause.message : 'Unable to load organizations')
+        const state = connectionForError(cause)
+        setConnection(state)
+        setError(connectionMessage(state))
       }
     }
   }
@@ -390,6 +515,10 @@ function DashboardApp() {
   // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.task_id, baseUrl, actor, token])
 
+  useEffect(() => {
+    setOnboarding((current) => ({ ...current, mission: runs.length ? 'complete' : 'incomplete' }))
+  }, [runs.length])
+
   const action = async (path: string, body?: Record<string, unknown>) => {
     if (!selected) return
     try {
@@ -416,6 +545,7 @@ function DashboardApp() {
       })
       if (input.startImmediately) await request(`/v1/runs/${run.id}/execute`, { method: 'POST' })
       await loadRuns()
+      setOnboarding((current) => ({ ...current, mission: 'complete' }))
       await loadRun(run)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Unable to create mission')
@@ -503,9 +633,64 @@ function DashboardApp() {
   const submitSettings = (event: FormEvent) => {
     event.preventDefault()
     localStorage.setItem('sacm-actor', actor)
+    localStorage.setItem('sacm-api-url', baseUrl.trim())
     void Promise.all([loadRuns(), loadClients()]).catch((cause) => {
-      setError(cause instanceof Error ? cause.message : 'Unable to refresh Mission Control data')
+      const state = connectionForError(cause)
+      setConnection(state)
+      setError(connectionMessage(state))
     })
+  }
+
+  const createOrganization = async (input: { slug: string; name: string }) => {
+    await request('/v1/organizations', {
+      method: 'POST',
+      body: JSON.stringify({ slug: input.slug, name: input.name }),
+    })
+    await loadClients()
+  }
+
+  const createProject = async (input: { organizationId: string; slug: string; name: string; repositoryPath?: string; repositoryFullName?: string }) => {
+    await request(`/v1/organizations/${input.organizationId}/projects`, {
+      method: 'POST',
+      body: JSON.stringify({
+        slug: input.slug,
+        name: input.name,
+        repository_path: input.repositoryPath || null,
+        repository_full_name: input.repositoryFullName || null,
+      }),
+    })
+    await loadClients()
+  }
+
+  const createBaselinePolicy = async (organizationId: string, region: string) => {
+    const categories = ['source_context', 'task_metadata', 'runtime_events', 'logs', 'artifacts', 'evidence', 'backups', 'analytics', 'audit']
+    const policy = await request<GovernancePolicy>(`/v1/organizations/${organizationId}/governance/policies`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Onboarding baseline',
+        description: 'Explicitly created baseline for an initial SACM mission. Review and replace this policy before production use.',
+        rules: categories.map((resource_category) => ({
+          resource_category,
+          classification: 'Internal',
+          retention_days: 90,
+          deletion_mode: 'TOMBSTONE',
+          exportable: true,
+          allowed_regions: [region],
+          storage_classes: ['standard'],
+          evidence_preservation: 'PRESERVE',
+        })),
+      }),
+    })
+    await request(`/v1/organizations/${organizationId}/governance/policies/${policy.id}/activate`, { method: 'POST' })
+    await loadClients()
+  }
+
+  const createEnrollmentToken = async (organizationId: string) => {
+    const issued = await request<{ enrollment_token: string; expires_at: string }>('/v1/executors/enrollment-tokens', {
+      method: 'POST',
+      body: JSON.stringify({ organization_id: organizationId, expires_in_seconds: 900 }),
+    })
+    return issued
   }
 
   return <MissionControl
@@ -549,6 +734,8 @@ function DashboardApp() {
     expertBenchmarkAssessment={expertBenchmarkAssessment}
     progress={progress}
     progressError={progressError}
+    connection={connection}
+    onboarding={onboarding}
     error={error}
     unavailableData={unavailableData}
     loading={loading}
@@ -564,6 +751,10 @@ function DashboardApp() {
     activatePolicy={(policy) => mutatePolicy(policy, 'activate')}
     retirePolicy={(policy) => mutatePolicy(policy, 'retire')}
     verifyEvidence={verifyEvidence}
+    createOrganization={createOrganization}
+    createProject={createProject}
+    createBaselinePolicy={createBaselinePolicy}
+    createEnrollmentToken={createEnrollmentToken}
     submitSettings={submitSettings}
   />
 }

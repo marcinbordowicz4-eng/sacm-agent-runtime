@@ -123,7 +123,7 @@ export function MissionControl(props: DashboardProps) {
     benchmarks: <BenchmarksPage {...props} />,
     security: <SecurityPage {...props} />,
     operations: <OperationsPage {...props} />,
-    settings: <SettingsPage {...props} />,
+    settings: <SettingsPage {...props} onOpenMissionComposer={() => setComposerOpen(true)} onNavigate={navigate} />,
   }[activeView]
 
   return <main className="workspace">
@@ -134,7 +134,7 @@ export function MissionControl(props: DashboardProps) {
         <button type="button" className="global-search" onClick={() => setCommandOpen(true)} aria-haspopup="dialog">
           <span aria-hidden="true">⌕</span><b>Search missions, applications and views</b><kbd>⌘ K</kbd>
         </button>
-        <div className="topbar-actions"><button type="button" className="new-mission-button" onClick={() => setComposerOpen(true)}>＋ New mission</button><div className="topbar-state"><span className={props.error ? 'connection-dot error-dot' : 'connection-dot'} /><span>{props.error ? 'Connection issue' : props.loading ? 'Refreshing' : 'API connected'}</span></div></div>
+        <div className="topbar-actions"><button type="button" className="new-mission-button" onClick={() => setComposerOpen(true)}>＋ New mission</button><div className="topbar-state"><span className={['api_unavailable', 'api_error', 'authentication_required', 'permission_denied', 'configuration_required'].includes(props.connection.kind) ? 'connection-dot error-dot' : 'connection-dot'} /><span>{props.loading ? 'Refreshing' : props.connection.title}</span></div></div>
       </div>
       {props.error && <p className="error" role="alert">{props.error}</p>}
       {props.unavailableData.length > 0 && <p className="data-notice" role="status"><b>PARTIAL DATA</b> {props.unavailableData.join(' · ')}</p>}

@@ -1,7 +1,10 @@
+import os
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
+from starlette.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from apps.api.routes import (
@@ -32,6 +35,7 @@ from apps.api.routes import (
 from sacm import __version__
 from sacm.adapters.repository_adapter import RepositoryError, RepositoryPathError
 from sacm.core.auth_service import (
+    production_mode,
     require_authenticated_actor,
     require_legacy_api_enabled,
     validate_production_configuration,
@@ -50,6 +54,55 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="SACM Agent Runtime", version=__version__, lifespan=lifespan)
+
+
+def _cors_origins() -> list[str]:
+    """Return explicitly configured browser origins for cross-origin consoles.
+
+    Same-origin requests do not need CORS.  Development gets the two Vite defaults;
+    production deployments must name every dashboard origin explicitly.  This avoids
+    a wildcard policy around bearer tokens and tenant-scoped API responses.
+    """
+
+    configured = os.getenv("SACM_CORS_ORIGINS", "")
+    if configured.strip():
+        return [
+            origin.strip().rstrip("/")
+            for origin in configured.split(",")
+            if origin.strip()
+        ]
+    if not production_mode():
+        return ["http://localhost:5173", "http://127.0.0.1:5173"]
+    return []
+
+
+allowed_cors_origins = _cors_origins()
+if allowed_cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_cors_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "X-SACM-Actor",
+            "X-Request-ID",
+        ],
+        expose_headers=["X-Request-ID"],
+    )
+
+
+@app.middleware("http")
+async def attach_request_id(request: Request, call_next):
+    """Give every API response a diagnostic identifier safe to show in the UI."""
+
+    request_id = (
+        request.headers.get("X-Request-ID", "").strip()[:128] or str(uuid.uuid4())
+    )
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 
 @app.exception_handler(AuthorizationError)

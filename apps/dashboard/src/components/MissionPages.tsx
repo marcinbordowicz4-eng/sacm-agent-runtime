@@ -9,6 +9,7 @@ import type {
 } from '../types'
 import { Meta, MissingData, Status, TagList } from './DashboardPrimitives'
 import { LiveProgress } from './LiveProgress'
+import type { DashboardView } from './viewTypes'
 
 const average = (values: (number | null | undefined)[]) => {
   const recorded = values.filter((value): value is number => value !== null && value !== undefined)
@@ -35,7 +36,9 @@ function DataState({ analytics }: { analytics?: RunAnalytics }) {
 }
 
 export function CommandCenterPage(props: DashboardProps & { onMission: (run: Run) => void }) {
-  const { runs, portfolioAnalytics, operationalHealth, executorFleet, loading, loadRuns, onMission } = props
+  const { runs, portfolioAnalytics, operationalHealth, executorFleet, loading, loadRuns, onMission, connection } = props
+  const dataUnavailable = !['connected', 'empty'].includes(connection.kind)
+  const known = (value: string | number) => dataUnavailable ? 'Not recorded' : value
   const successes = portfolioAnalytics.filter((item) => item.outcome === 'SUCCESS').length
   const failures = portfolioAnalytics.filter((item) => item.outcome === 'FAILURE').length
   const blockedPolicies = portfolioAnalytics.filter((item) => item.policy_blocked === true).length
@@ -64,15 +67,16 @@ export function CommandCenterPage(props: DashboardProps & { onMission: (run: Run
       description="Authorized delivery outcomes, capacity and trust signals from SACM APIs."
       actions={<button type="button" className="primary" onClick={() => void loadRuns()} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh telemetry'}</button>}
     />
+    {dataUnavailable && <p className="data-notice danger" role="status"><b>{connection.title.toUpperCase()}</b> {connection.detail} Next step: {connection.next_step}{connection.request_id ? ` Diagnostic ID: ${connection.request_id}` : ''}</p>}
     <section className="command-metrics" aria-label="Portfolio metrics">
-      <div><span>Authorized missions</span><strong>{metric(runs.length)}</strong><small>{portfolioAnalytics.length} with outcome analytics</small></div>
-      <div><span>Accepted proxy</span><strong>{metric(acceptedProxyRate, '%')}</strong><small>{successes} SUCCESS outcomes; not human acceptance</small></div>
-      <div><span>Failed outcomes</span><strong>{metric(failures)}</strong><small>Persisted FAILURE outcomes only</small></div>
-      <div><span>Estimated cost</span><strong>{money(cost)}</strong><small>Recorded provider estimates</small></div>
-      <div><span>Requirement coverage</span><strong>{metric(requirementCoverage, '%')}</strong><small>Mean of recorded runs</small></div>
-      <div><span>Evidence coverage</span><strong>{metric(evidenceCoverage, '%')}</strong><small>Mean of recorded runs</small></div>
-      <div><span>Policy blocks / high-critical findings</span><strong>{blockedPolicies} / {blockedSecurity}</strong><small>Recorded policy blocks · open high/critical findings</small></div>
-      <div><span>Executor capacity</span><strong>{metric(executorFleet?.capacity.available_slots)}</strong><small>{executorFleet ? `${executorFleet.active}/${executorFleet.total} executors active` : 'Not authorized or not configured'}</small></div>
+      <div><span>Authorized missions</span><strong>{known(metric(runs.length))}</strong><small>{dataUnavailable ? 'API result not recorded' : `${portfolioAnalytics.length} with outcome analytics`}</small></div>
+      <div><span>Accepted proxy</span><strong>{known(metric(acceptedProxyRate, '%'))}</strong><small>{dataUnavailable ? 'API result not recorded' : `${successes} SUCCESS outcomes; not human acceptance`}</small></div>
+      <div><span>Failed outcomes</span><strong>{known(metric(failures))}</strong><small>Persisted FAILURE outcomes only</small></div>
+      <div><span>Estimated cost</span><strong>{dataUnavailable ? 'Not recorded' : money(cost)}</strong><small>Recorded provider estimates</small></div>
+      <div><span>Requirement coverage</span><strong>{dataUnavailable ? 'Not recorded' : metric(requirementCoverage, '%')}</strong><small>Mean of recorded runs</small></div>
+      <div><span>Evidence coverage</span><strong>{dataUnavailable ? 'Not recorded' : metric(evidenceCoverage, '%')}</strong><small>Mean of recorded runs</small></div>
+      <div><span>Policy blocks / high-critical findings</span><strong>{dataUnavailable ? 'Not recorded' : `${blockedPolicies} / ${blockedSecurity}`}</strong><small>Recorded policy blocks · open high/critical findings</small></div>
+      <div><span>Executor capacity</span><strong>{dataUnavailable ? 'Not recorded' : metric(executorFleet?.capacity.available_slots)}</strong><small>{executorFleet ? `${executorFleet.active}/${executorFleet.total} executors active` : 'Not authorized or not configured'}</small></div>
     </section>
     {(portfolioAnalytics.length < runs.length || legacyCount > 0) && <p className="data-notice"><b>PARTIAL / LEGACY PORTFOLIO</b> {runs.length - portfolioAnalytics.length} missions lack authorized outcome analytics; {legacyCount} analytics records report partial or legacy source data. Missing values are not treated as zero.</p>}
     <section className="command-grid">
@@ -88,7 +92,7 @@ export function CommandCenterPage(props: DashboardProps & { onMission: (run: Run
       </article>
       <article className="surface">
         <div className="section-head"><div><p className="eyebrow">RECENT MISSIONS</p><h2>Delivery pulse</h2></div><span className="count-pill">{runs.length}</span></div>
-        <div className="mission-table">{runs.slice(0, 7).map((run) => {
+        <div className="mission-table">{dataUnavailable ? <MissingData text="Mission data is not recorded while the API connection is unavailable." /> : !runs.length ? <MissingData text="No authorized missions yet. Complete onboarding and create the first mission." /> : runs.slice(0, 7).map((run) => {
           const analytics = portfolioAnalytics.find((item) => item.run_id === run.id)
           return <button type="button" key={run.id} onClick={() => onMission(run)}>
             <span><b>{run.task_id.slice(0, 10)}</b><small>{date(run.updated_at)}</small></span>
@@ -593,7 +597,166 @@ function DeadLetterJob({ job, props }: { job: DashboardProps['organizationJobs']
   return <div className="dead-letter-row"><div><b>{job.id.slice(0, 12)}</b><small>Run {job.run_id.slice(0, 10)} · attempt {job.attempt ?? 'Not recorded'}</small></div><label>Recovery rationale<input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Why is requeue safe?" /></label><button type="button" onClick={() => void requeue()} disabled={submitting}>{submitting ? 'Requeueing…' : 'Requeue'}</button>{error && <p className="danger-text" role="alert">{error}</p>}</div>
 }
 
-export function SettingsPage(props: DashboardProps) {
+type SettingsPageProps = DashboardProps & {
+  onOpenMissionComposer: () => void
+  onNavigate: (view: DashboardView) => void
+}
+
+type OnboardingDraft = {
+  organizationSlug: string
+  organizationName: string
+  projectOrganizationId: string
+  projectSlug: string
+  projectName: string
+  repositoryPath: string
+  repositoryFullName: string
+  policyOrganizationId: string
+  policyRegion: string
+  executorOrganizationId: string
+}
+
+const onboardingDraftKey = 'sacm-onboarding-draft/v1'
+
+const initialOnboardingDraft = (): OnboardingDraft => {
+  try {
+    const saved = localStorage.getItem(onboardingDraftKey)
+    if (saved) return { ...defaultOnboardingDraft, ...JSON.parse(saved) as Partial<OnboardingDraft> }
+  } catch {
+    // A corrupt local draft must not block reconnecting to the real API.
+  }
+  return defaultOnboardingDraft
+}
+
+const defaultOnboardingDraft: OnboardingDraft = {
+  organizationSlug: '',
+  organizationName: '',
+  projectOrganizationId: '',
+  projectSlug: '',
+  projectName: '',
+  repositoryPath: '',
+  repositoryFullName: '',
+  policyOrganizationId: '',
+  policyRegion: 'eu-central-1',
+  executorOrganizationId: '',
+}
+
+function OnboardingChecklist(props: SettingsPageProps) {
+  const [draft, setDraft] = useState<OnboardingDraft>(initialOnboardingDraft)
+  const [busy, setBusy] = useState('')
+  const [error, setError] = useState('')
+  const [enrollment, setEnrollment] = useState<{ token: string; expiresAt: string }>()
+  const organizationId = draft.projectOrganizationId || draft.policyOrganizationId || draft.executorOrganizationId || props.clients[0]?.id || ''
+
+  const update = <K extends keyof OnboardingDraft>(key: K, value: OnboardingDraft[K]) => {
+    setDraft((current) => {
+      const next = { ...current, [key]: value }
+      localStorage.setItem(onboardingDraftKey, JSON.stringify(next))
+      return next
+    })
+  }
+
+  const submitOrganization = async (event: FormEvent) => {
+    event.preventDefault()
+    setBusy('organization')
+    setError('')
+    try {
+      await props.createOrganization({ slug: draft.organizationSlug.trim(), name: draft.organizationName.trim() })
+      update('organizationSlug', '')
+      update('organizationName', '')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not create the organization.')
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const submitRepository = async (event: FormEvent) => {
+    event.preventDefault()
+    const selectedOrganization = draft.projectOrganizationId || props.clients[0]?.id
+    if (!selectedOrganization) {
+      setError('Create or select an organization before connecting a repository.')
+      return
+    }
+    setBusy('repository')
+    setError('')
+    try {
+      await props.createProject({
+        organizationId: selectedOrganization,
+        slug: draft.projectSlug.trim(),
+        name: draft.projectName.trim(),
+        repositoryPath: draft.repositoryPath.trim() || undefined,
+        repositoryFullName: draft.repositoryFullName.trim() || undefined,
+      })
+      update('projectSlug', '')
+      update('projectName', '')
+      update('repositoryPath', '')
+      update('repositoryFullName', '')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not connect the repository.')
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const createPolicy = async () => {
+    const selectedOrganization = draft.policyOrganizationId || props.clients[0]?.id
+    if (!selectedOrganization) {
+      setError('Create or select an organization before configuring a policy.')
+      return
+    }
+    setBusy('policy')
+    setError('')
+    try {
+      await props.createBaselinePolicy(selectedOrganization, draft.policyRegion.trim())
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not create the baseline policy.')
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const issueEnrollment = async () => {
+    const selectedOrganization = draft.executorOrganizationId || props.clients[0]?.id
+    if (!selectedOrganization) {
+      setError('Create or select an organization before enrolling an executor.')
+      return
+    }
+    setBusy('executor')
+    setError('')
+    try {
+      const issued = await props.createEnrollmentToken(selectedOrganization)
+      setEnrollment({ token: issued.enrollment_token, expiresAt: issued.expires_at })
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not issue an executor enrollment token.')
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const step = (label: string, state: string, detail: string) => <li key={label} className={`onboarding-step ${state}`}><Status value={state === 'complete' ? 'COMPLETE' : state === 'unknown' ? 'NOT RECORDED' : 'REQUIRED'} /><div><b>{label}</b><small>{detail}</small></div></li>
+
+  return <section className="surface onboarding" aria-labelledby="onboarding-title">
+    <div className="section-head"><div><p className="eyebrow">FIRST MISSION</p><h2 id="onboarding-title">Resumable setup</h2></div><span className="count-pill">{Object.values(props.onboarding).filter((value) => value === 'complete').length}/5</span></div>
+    <p className="quiet">Progress is derived from SACM API records. Draft values are stored only in this browser so a refresh never discards unfinished setup.</p>
+    <ol className="onboarding-list">
+      {step('Organization', props.onboarding.organization, props.onboarding.organization === 'complete' ? 'An authorized organization is available.' : 'Create the tenant that will own this delivery history.')}
+      {step('Repository', props.onboarding.repository, props.onboarding.repository === 'complete' ? 'A project has a repository reference or local path.' : 'Add a project and its repository reference or checked-out path.')}
+      {step('Executor', props.onboarding.executor, props.onboarding.executor === 'complete' ? 'At least one authorized executor is enrolled.' : 'Issue a short-lived enrollment token and enroll a real executor.')}
+      {step('Policy', props.onboarding.policy, props.onboarding.policy === 'complete' ? 'An active governance policy is present.' : 'Create and review an active policy before work begins.')}
+      {step('First mission', props.onboarding.mission, props.onboarding.mission === 'complete' ? 'A mission exists in the authorized workspace.' : 'Create a requirement-backed mission when the preceding checks are ready.')}
+    </ol>
+    <div className="onboarding-forms">
+      {props.onboarding.organization !== 'complete' && <form onSubmit={(event) => void submitOrganization(event)}><h3>1. Create organization</h3><label>Slug<input value={draft.organizationSlug} onChange={(event) => update('organizationSlug', event.target.value)} pattern="[a-z0-9-]{2,63}" required placeholder="acme-engineering" /></label><label>Name<input value={draft.organizationName} onChange={(event) => update('organizationName', event.target.value)} required placeholder="Acme Engineering" /></label><button type="submit" disabled={busy === 'organization'}>{busy === 'organization' ? 'Creating…' : 'Create organization'}</button></form>}
+      {props.onboarding.repository !== 'complete' && <form onSubmit={(event) => void submitRepository(event)}><h3>2. Connect repository</h3><label>Organization<select value={draft.projectOrganizationId || organizationId} onChange={(event) => update('projectOrganizationId', event.target.value)} required><option value="">Select organization</option>{props.clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}</select></label><label>Project slug<input value={draft.projectSlug} onChange={(event) => update('projectSlug', event.target.value)} pattern="[a-z0-9-]{2,63}" required placeholder="payments-api" /></label><label>Project name<input value={draft.projectName} onChange={(event) => update('projectName', event.target.value)} required placeholder="Payments API" /></label><label>Repository full name or local path<input value={draft.repositoryFullName || draft.repositoryPath} onChange={(event) => { const value = event.target.value; if (value.startsWith('/')) { update('repositoryPath', value); update('repositoryFullName', '') } else { update('repositoryFullName', value); update('repositoryPath', '') } }} required placeholder="acme/payments-api or /workspace/payments-api" /></label><button type="submit" disabled={busy === 'repository'}>{busy === 'repository' ? 'Connecting…' : 'Create project and connect repository'}</button></form>}
+      {props.onboarding.policy !== 'complete' && <form onSubmit={(event) => { event.preventDefault(); void createPolicy() }}><h3>3. Create baseline policy</h3><p className="quiet">Creates and activates a visible Internal-data baseline with 90-day tombstone retention. Review it in Policies before production use.</p><label>Organization<select value={draft.policyOrganizationId || organizationId} onChange={(event) => update('policyOrganizationId', event.target.value)} required><option value="">Select organization</option>{props.clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}</select></label><label>Allowed region<input value={draft.policyRegion} onChange={(event) => update('policyRegion', event.target.value)} required /></label><button type="submit" disabled={busy === 'policy'}>{busy === 'policy' ? 'Creating…' : 'Create and activate baseline'}</button><button type="button" onClick={() => props.onNavigate('policies')}>Review policies</button></form>}
+      {props.onboarding.executor !== 'complete' && <form onSubmit={(event) => { event.preventDefault(); void issueEnrollment() }}><h3>4. Enroll executor</h3><p className="quiet">The token is short-lived and shown once. It does not create an executor by itself; complete enrollment from a real, policy-compliant runtime.</p><label>Organization<select value={draft.executorOrganizationId || organizationId} onChange={(event) => update('executorOrganizationId', event.target.value)} required><option value="">Select organization</option>{props.clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}</select></label><button type="submit" disabled={busy === 'executor'}>{busy === 'executor' ? 'Issuing…' : 'Issue 15-minute enrollment token'}</button><button type="button" onClick={() => props.onNavigate('operations')}>Check executor fleet</button>{enrollment && <aside className="enrollment-token" role="status"><b>Enrollment token — copy securely now</b><code>{enrollment.token}</code><small>Expires {date(enrollment.expiresAt)}. It is not persisted by SACM Console.</small></aside>}</form>}
+      {props.onboarding.mission !== 'complete' && <article><h3>5. Create first mission</h3><p className="quiet">Mission creation uses the actual requirement and repository fields. It does not inject sample telemetry.</p><button type="button" className="primary" onClick={props.onOpenMissionComposer}>Open mission composer</button></article>}
+    </div>
+    {error && <p className="danger-text" role="alert">{error}</p>}
+  </section>
+}
+
+export function SettingsPage(props: SettingsPageProps) {
   const submit = (event: FormEvent) => props.submitSettings(event)
   return <>
     <PageHeader eyebrow="ADMINISTRATION" title="Settings" description="API connection and authentication are configured only here and stored locally where indicated." />
@@ -605,7 +768,8 @@ export function SettingsPage(props: DashboardProps) {
         <label htmlFor="token">Access token<span>Held in memory only; it is not written to localStorage.</span><input id="token" value={props.token} onChange={(event) => props.setToken(event.target.value)} type="password" autoComplete="current-password" placeholder="Optional in local development" /></label>
         <button type="submit" className="primary">Connect and refresh</button>
       </form>
-      <article className="surface"><p className="eyebrow">CONNECTION STATE</p><h2>Current workspace</h2><dl className="metadata"><Meta label="API" value={props.baseUrl} /><Meta label="Actor" value={props.actor} /><Meta label="Authentication" value={props.token ? 'Bearer token in memory' : 'Actor header only'} /><Meta label="Authorized organizations" value={String(props.clients.length)} /></dl><p className="quiet">Authorization remains enforced by every backend resource endpoint. Mission Control hides unavailable optional operational data rather than treating it as healthy.</p></article>
+      <article className="surface"><p className="eyebrow">CONNECTION STATE</p><h2>{props.connection.title}</h2><dl className="metadata"><Meta label="API" value={props.baseUrl || 'Configuration required'} /><Meta label="Actor" value={props.actor} /><Meta label="Authentication" value={props.token ? 'Bearer token in memory' : 'Actor header only'} /><Meta label="Authorized organizations" value={String(props.clients.length)} /><Meta label="Diagnostic ID" value={props.connection.request_id || 'Not recorded'} /></dl><p className="quiet">{props.connection.detail}</p><p className="data-notice">Next step: {props.connection.next_step}</p></article>
     </section>
+    <OnboardingChecklist {...props} />
   </>
 }
