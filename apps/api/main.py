@@ -4,8 +4,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
-from starlette.middleware.cors import CORSMiddleware
 from sqlalchemy import text
+from starlette.middleware.cors import CORSMiddleware
 
 from apps.api.routes import (
     agents,
@@ -56,6 +56,16 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="SACM Agent Runtime", version=__version__, lifespan=lifespan)
 
 
+def _build_metadata() -> dict[str, str]:
+    """Return non-secret build identifiers for operator diagnostics."""
+
+    return {
+        "version": __version__,
+        "revision": os.getenv("SACM_VCS_REF", "unknown"),
+        "build_date": os.getenv("SACM_BUILD_DATE", "unknown"),
+    }
+
+
 def _cors_origins() -> list[str]:
     """Return explicitly configured browser origins for cross-origin consoles.
 
@@ -102,6 +112,8 @@ async def attach_request_id(request: Request, call_next):
     )
     response = await call_next(request)
     response.headers["X-Request-ID"] = request_id
+    response.headers["X-SACM-Version"] = __version__
+    response.headers["X-SACM-Revision"] = _build_metadata()["revision"]
     return response
 
 
@@ -240,6 +252,13 @@ app.include_router(resilience.router, prefix="/v1", tags=["resilience"])
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/version")
+def version() -> dict[str, str]:
+    """Expose deploy provenance without requiring tenant credentials."""
+
+    return _build_metadata()
 
 
 @app.get("/ready")

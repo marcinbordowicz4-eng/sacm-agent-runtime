@@ -14,7 +14,7 @@ LABEL org.opencontainers.image.title="SACM Agent Runtime" \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y age curl gh git nodejs npm postgresql-client \
+    && apt-get install --no-install-recommends -y age curl gh git libpcre2-8-0 nodejs npm postgresql-client \
     && npm install --global @openai/codex@latest \
     && curl -fsSL "https://github.com/github/copilot-cli/releases/download/v${COPILOT_VERSION}/copilot-linux-x64.tar.gz" \
       | tar -xz -C /usr/local/bin copilot \
@@ -45,6 +45,8 @@ RUN chmod 0755 /app/docker-entrypoint.sh
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    SACM_VCS_REF=${VCS_REF} \
+    SACM_BUILD_DATE=${BUILD_DATE} \
     HOME=/app/.sacm/state/home \
     XDG_CACHE_HOME=/app/.sacm/state/cache
 

@@ -28,6 +28,7 @@ services:
     env_file: ${SACM_ENV_FILE:-production.env}
     environment:
       SACM_ENVIRONMENT: production
+      SACM_CORS_ORIGINS: ${SACM_CORS_ORIGINS:-https://sacm.io}
       SACM_DATABASE_HOST: postgres
       SACM_DATABASE_PORT: "5432"
       SACM_DATABASE_NAME: sacm

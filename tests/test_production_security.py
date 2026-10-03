@@ -50,6 +50,24 @@ def _production_environment(monkeypatch):
     )
 
 
+def test_build_metadata_and_request_correlation_headers(monkeypatch):
+    """Public diagnostics expose build provenance without tenant data or secrets."""
+
+    monkeypatch.setenv("SACM_VCS_REF", "test-revision")
+    monkeypatch.setenv("SACM_BUILD_DATE", "2026-10-03T00:00:00Z")
+    client = TestClient(app)
+
+    metadata = client.get("/version")
+    assert metadata.status_code == 200
+    assert metadata.json()["revision"] == "test-revision"
+    assert metadata.json()["build_date"] == "2026-10-03T00:00:00Z"
+
+    response = client.get("/health", headers={"X-Request-ID": "test-correlation"})
+    assert response.status_code == 200
+    assert response.headers["x-request-id"] == "test-correlation"
+    assert response.headers["x-sacm-revision"] == "test-revision"
+
+
 def test_production_configuration_rejects_missing_controls(monkeypatch):
     monkeypatch.setenv("SACM_ENVIRONMENT", "production")
 
@@ -97,6 +115,7 @@ def test_production_image_is_labeled_non_root_and_mounts_evidence_key():
 
     assert "org.opencontainers.image.revision" in dockerfile
     assert "USER sacm" in dockerfile
+    assert "SACM_CORS_ORIGINS" in compose
     assert "SACM_EVIDENCE_SIGNING_PRIVATE_KEY_FILE" in compose
     assert "evidence_signing_private_key" in compose
 

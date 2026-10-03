@@ -6,6 +6,7 @@ import type {
   AggregateAnalytics,
   ApplicationContextFull,
   Approval,
+  BuildMetadata,
   Client,
   ConnectionState,
   CognitiveDeliveryPassport,
@@ -155,6 +156,7 @@ function DashboardApp() {
     detail: 'Connecting to the configured endpoint.',
     next_step: 'Wait for the connection check to complete.',
   })
+  const [apiBuild, setApiBuild] = useState<BuildMetadata>()
   const [onboarding, setOnboarding] = useState<OnboardingStatus>({
     organization: 'incomplete',
     repository: 'incomplete',
@@ -390,12 +392,14 @@ function DashboardApp() {
     })
     setUnavailableData([])
     try {
-      const [nextRuns, benchmarkResult] = await Promise.all([
+      const [nextRuns, benchmarkResult, apiBuildResult] = await Promise.all([
         request<Run[]>('/v1/runs'),
         optional<ExpertBenchmarkAssessment>('/v1/benchmarks/expert-assessment', 'Expert assessment'),
+        optional<BuildMetadata>('/version', 'API build metadata'),
       ])
       if (generation !== loadGeneration.current) return
       setRuns(nextRuns)
+      setApiBuild(apiBuildResult.data)
       setConnection(nextRuns.length
         ? {
             kind: 'connected',
@@ -420,6 +424,7 @@ function DashboardApp() {
         clearMissionData()
         setUnavailableData([
           benchmarkResult.unavailable,
+          apiBuildResult.unavailable,
           ...analyticsResults.map((item) => item.unavailable),
         ].filter((item): item is string => Boolean(item)))
       }
@@ -735,6 +740,7 @@ function DashboardApp() {
     progress={progress}
     progressError={progressError}
     connection={connection}
+    apiBuild={apiBuild}
     onboarding={onboarding}
     error={error}
     unavailableData={unavailableData}

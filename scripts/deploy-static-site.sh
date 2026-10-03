@@ -4,8 +4,15 @@ set -eu
 bucket=${SACM_SITE_BUCKET:?Set SACM_SITE_BUCKET}
 distribution=${SACM_CLOUDFRONT_DISTRIBUTION_ID:?Set SACM_CLOUDFRONT_DISTRIBUTION_ID}
 api_url=${VITE_SACM_API_URL:-https://api.sacm.io}
+revision=${SACM_VCS_REF:-$(git rev-parse --verify HEAD)}
+build_date=${SACM_BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
+dashboard_version=${SACM_DASHBOARD_VERSION:-$revision}
 
-VITE_SACM_API_URL="$api_url" npm --prefix apps/dashboard run build
+VITE_SACM_API_URL="$api_url" \
+VITE_SACM_VERSION="$dashboard_version" \
+VITE_SACM_VCS_REF="$revision" \
+VITE_SACM_BUILD_DATE="$build_date" \
+npm --prefix apps/dashboard run build
 
 aws s3 sync apps/dashboard/dist "s3://${bucket}" \
   --delete \

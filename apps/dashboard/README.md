@@ -51,7 +51,9 @@ SACM_CORS_ORIGINS=https://console.example.com
 
 Do not use a wildcard origin: Mission Control sends tenant-scoped authorization
 headers. The API returns `X-Request-ID` so a connection error can be correlated
-with server logs. A deployment must route the dashboard itself and its `/api`
+with server logs. It also returns non-secret `X-SACM-Version` and
+`X-SACM-Revision` headers and exposes the same metadata at `GET /version`.
+A deployment must route the dashboard itself and its `/api`
 path (or set `VITE_SACM_API_URL` to the API origin); serving only the API does
 not serve Mission Control.
 

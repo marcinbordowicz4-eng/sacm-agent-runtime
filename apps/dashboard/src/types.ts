@@ -657,6 +657,12 @@ export type ConnectionState = {
   request_id?: string
 }
 
+export type BuildMetadata = {
+  version: string
+  revision: string
+  build_date: string
+}
+
 export type OnboardingStatus = {
   organization: 'complete' | 'incomplete'
   repository: 'complete' | 'incomplete'
@@ -707,6 +713,7 @@ export type DashboardProps = {
   progress?: WorkflowProgress
   progressError: string
   connection: ConnectionState
+  apiBuild?: BuildMetadata
   onboarding: OnboardingStatus
   error: string
   unavailableData: string[]

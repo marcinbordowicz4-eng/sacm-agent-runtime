@@ -40,6 +40,31 @@ complete a waiting step, SACM compares that binding with the latest durable
 plan. A mismatch marks the approval `SUPERSEDED`; a re-submission creates a new
 approval and records a `StepApprovalRebound` event without deleting history.
 
+## P0 extension — deploy provenance and actionable connection failures
+
+`GET /version` and API response headers now expose non-secret package version,
+revision and build-date metadata. The dashboard attaches a request identifier
+to every call and shows the returned diagnostic identifier alongside specific
+network, configuration, authentication and authorization recovery guidance.
+The onboarding draft persists only non-secret form data; bearer and executor
+enrollment tokens remain memory-only.
+
+**Current deployment status:** the static-site publish script builds the
+dashboard for `https://api.sacm.io`, and the production Compose configuration
+defaults `SACM_CORS_ORIGINS` to `https://sacm.io`. The image and static build
+both receive revision metadata. Applying that configuration and testing the
+deployed CloudFront/API pair remain required; source configuration alone is not
+evidence that the public console currently works.
+
+## P0 extension — CI and image security follow-up
+
+The 2026-10-03 CI run failed on an import-order violation introduced with the
+diagnostic endpoint; it is fixed locally and verified with the same Ruff scope.
+The security-release test suite passed, but its container scan reported
+`CVE-2026-103111` in `libpcre2-8-0`. The Dockerfile explicitly requests the
+fixed package candidate. A new remote pipeline must verify the rebuilt image;
+the local Docker daemon was not available in this workspace.
+
 ## Next milestones
 
 | Order | Outcome | Dependencies | Exit evidence |
